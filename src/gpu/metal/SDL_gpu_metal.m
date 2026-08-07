@@ -3683,6 +3683,7 @@ static bool METAL_INTERNAL_CreateSwapchain(
 
     windowData->layer = (__bridge CAMetalLayer *)(SDL_Metal_GetLayer(windowData->view));
     windowData->layer.device = renderer->device;
+    windowData->layer.opaque = (windowData->window->flags & SDL_WINDOW_TRANSPARENT) == 0;
 #ifdef SDL_PLATFORM_MACOS
     if (@available(macOS 10.13, *)) {
         windowData->layer.displaySyncEnabled = (presentMode != SDL_GPU_PRESENTMODE_IMMEDIATE);

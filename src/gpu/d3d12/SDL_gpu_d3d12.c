@@ -27,6 +27,12 @@
 #include "../../core/windows/SDL_windows.h"
 #include "../../video/directx/SDL_d3d12.h"
 
+#ifdef SDL_PLATFORM_WIN32
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
+#endif
+#endif
+
 #ifdef HAVE_GPU_OPENXR
 #define XR_USE_GRAPHICS_API_D3D12 1
 #include "../xr/SDL_openxr_internal.h"
@@ -104,6 +110,9 @@
 #endif
 #define DXGI_DLL      "dxgi.dll"
 #define DXGIDEBUG_DLL "dxgidebug.dll"
+#ifdef SDL_PLATFORM_WIN32
+#define DCOMP_DLL     "dcomp.dll"
+#endif
 #elif defined(__APPLE__)
 #define D3D12_DLL     "libdxvk_d3d12.dylib"
 #define DXGI_DLL      "libdxvk_dxgi.dylib"
@@ -143,6 +152,68 @@
 // Function Pointer Signatures
 typedef HRESULT (WINAPI *pfnCreateDXGIFactory1)(const GUID *riid, void **ppFactory);
 typedef HRESULT (WINAPI *pfnDXGIGetDebugInterface)(const GUID *riid, void **ppDebug);
+#ifdef SDL_PLATFORM_WIN32
+typedef HRESULT (WINAPI *pfnDCompositionCreateDevice)(IDXGIDevice *dxgiDevice, const IID *iid, void **dcompositionDevice);
+
+typedef struct D3D12CompositionDevice D3D12CompositionDevice;
+typedef struct D3D12CompositionTarget D3D12CompositionTarget;
+typedef struct D3D12CompositionVisual D3D12CompositionVisual;
+
+typedef struct D3D12CompositionDeviceVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(D3D12CompositionDevice *device, const IID *iid, void **object);
+    ULONG (STDMETHODCALLTYPE *AddRef)(D3D12CompositionDevice *device);
+    ULONG (STDMETHODCALLTYPE *Release)(D3D12CompositionDevice *device);
+    HRESULT (STDMETHODCALLTYPE *Commit)(D3D12CompositionDevice *device);
+    HRESULT (STDMETHODCALLTYPE *WaitForCommitCompletion)(D3D12CompositionDevice *device);
+    HRESULT (STDMETHODCALLTYPE *GetFrameStatistics)(D3D12CompositionDevice *device, void *statistics);
+    HRESULT (STDMETHODCALLTYPE *CreateTargetForHwnd)(D3D12CompositionDevice *device, HWND window, BOOL topmost, D3D12CompositionTarget **target);
+    HRESULT (STDMETHODCALLTYPE *CreateVisual)(D3D12CompositionDevice *device, D3D12CompositionVisual **visual);
+} D3D12CompositionDeviceVtbl;
+
+struct D3D12CompositionDevice
+{
+    D3D12CompositionDeviceVtbl *lpVtbl;
+};
+
+typedef struct D3D12CompositionTargetVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(D3D12CompositionTarget *target, const IID *iid, void **object);
+    ULONG (STDMETHODCALLTYPE *AddRef)(D3D12CompositionTarget *target);
+    ULONG (STDMETHODCALLTYPE *Release)(D3D12CompositionTarget *target);
+    HRESULT (STDMETHODCALLTYPE *SetRoot)(D3D12CompositionTarget *target, D3D12CompositionVisual *visual);
+} D3D12CompositionTargetVtbl;
+
+struct D3D12CompositionTarget
+{
+    D3D12CompositionTargetVtbl *lpVtbl;
+};
+
+typedef struct D3D12CompositionVisualVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(D3D12CompositionVisual *visual, const IID *iid, void **object);
+    ULONG (STDMETHODCALLTYPE *AddRef)(D3D12CompositionVisual *visual);
+    ULONG (STDMETHODCALLTYPE *Release)(D3D12CompositionVisual *visual);
+    HRESULT (STDMETHODCALLTYPE *SetOffsetX)(D3D12CompositionVisual *visual, float offset);
+    HRESULT (STDMETHODCALLTYPE *SetOffsetXAnimation)(D3D12CompositionVisual *visual, IUnknown *animation);
+    HRESULT (STDMETHODCALLTYPE *SetOffsetY)(D3D12CompositionVisual *visual, float offset);
+    HRESULT (STDMETHODCALLTYPE *SetOffsetYAnimation)(D3D12CompositionVisual *visual, IUnknown *animation);
+    HRESULT (STDMETHODCALLTYPE *SetTransformMatrix)(D3D12CompositionVisual *visual, const void *matrix);
+    HRESULT (STDMETHODCALLTYPE *SetTransform)(D3D12CompositionVisual *visual, IUnknown *transform);
+    HRESULT (STDMETHODCALLTYPE *SetTransformParent)(D3D12CompositionVisual *visual, D3D12CompositionVisual *transformParent);
+    HRESULT (STDMETHODCALLTYPE *SetEffect)(D3D12CompositionVisual *visual, IUnknown *effect);
+    HRESULT (STDMETHODCALLTYPE *SetBitmapInterpolationMode)(D3D12CompositionVisual *visual, int interpolationMode);
+    HRESULT (STDMETHODCALLTYPE *SetBorderMode)(D3D12CompositionVisual *visual, int borderMode);
+    HRESULT (STDMETHODCALLTYPE *SetClipRectangle)(D3D12CompositionVisual *visual, const void *clip);
+    HRESULT (STDMETHODCALLTYPE *SetClip)(D3D12CompositionVisual *visual, IUnknown *clip);
+    HRESULT (STDMETHODCALLTYPE *SetContent)(D3D12CompositionVisual *visual, IUnknown *content);
+} D3D12CompositionVisualVtbl;
+
+struct D3D12CompositionVisual
+{
+    D3D12CompositionVisualVtbl *lpVtbl;
+};
+#endif
 
 #ifdef USE_PIX_RUNTIME
 #define PIX_BEGIN_EVENT_ON_COMMAND_LIST_FUNC "PIXBeginEventOnCommandList"
@@ -165,6 +236,9 @@ static const IID D3D_IID_IDXGIDevice1 = { 0x77db970f, 0x6276, 0x48ba, { 0xba, 0x
 static const IID D3D_IID_IDXGIDevice = { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
 #endif
 static const IID D3D_IID_IDXGISwapChain3 = { 0x94d99bdb, 0xf1f8, 0x4ab0, { 0xb2, 0x36, 0x7d, 0xa0, 0x17, 0x0e, 0xda, 0xb1 } };
+#ifdef SDL_PLATFORM_WIN32
+static const IID D3D_IID_IDCompositionDevice = { 0xc37ea93a, 0xe7aa, 0x450d, { 0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3 } };
+#endif
 #ifdef HAVE_IDXGIINFOQUEUE
 static const IID D3D_IID_IDXGIDebug = { 0x119e7452, 0xde9e, 0x40fe, { 0x88, 0x06, 0x88, 0xf9, 0x0c, 0x12, 0xb4, 0x41 } };
 static const IID D3D_IID_IDXGIInfoQueue = { 0xd67441c7, 0x672a, 0x476f, { 0x9e, 0x82, 0xcd, 0x55, 0xb4, 0x49, 0x49, 0xce } };
@@ -882,6 +956,12 @@ typedef struct D3D12WindowData
     D3D12XBOX_FRAME_PIPELINE_TOKEN frameToken;
 #else
     IDXGISwapChain3 *swapchain;
+#ifdef SDL_PLATFORM_WIN32
+    D3D12CompositionDevice *compositionDevice;
+    D3D12CompositionTarget *compositionTarget;
+    D3D12CompositionVisual *compositionVisual;
+    bool addedNoRedirectionBitmapStyle;
+#endif
 #endif
     SDL_GPUPresentMode present_mode;
     SDL_GPUSwapchainComposition swapchainComposition;
@@ -925,6 +1005,10 @@ struct D3D12Renderer
     IDXGIAdapter1 *adapter;
     SDL_SharedObject *dxgi_dll;
     SDL_SharedObject *dxgidebug_dll;
+#ifdef SDL_PLATFORM_WIN32
+    SDL_SharedObject *dcomp_dll;
+    pfnDCompositionCreateDevice pDCompositionCreateDevice;
+#endif
 #endif
 #ifdef USE_PIX_RUNTIME
     SDL_SharedObject *winpixeventruntime_dll;
@@ -1771,6 +1855,13 @@ static void D3D12_INTERNAL_DestroyRenderer(D3D12Renderer *renderer)
         SDL_UnloadObject(renderer->dxgidebug_dll);
         renderer->dxgidebug_dll = NULL;
     }
+#ifdef SDL_PLATFORM_WIN32
+    if (renderer->dcomp_dll) {
+        SDL_UnloadObject(renderer->dcomp_dll);
+        renderer->dcomp_dll = NULL;
+    }
+    renderer->pDCompositionCreateDevice = NULL;
+#endif
 #endif
 #ifdef USE_PIX_RUNTIME
     if (renderer->winpixeventruntime_dll) {
@@ -6557,6 +6648,139 @@ static D3D12WindowData *D3D12_INTERNAL_FetchWindowData(
     return (D3D12WindowData *)SDL_GetPointerProperty(properties, WINDOW_PROPERTY_DATA, NULL);
 }
 
+#ifdef SDL_PLATFORM_WIN32
+static bool D3D12_INTERNAL_EnableCompositionWindowStyle(D3D12WindowData *windowData, HWND windowHandle)
+{
+    LONG_PTR extendedStyle;
+    LONG_PTR previousStyle;
+
+    SetLastError(ERROR_SUCCESS);
+    extendedStyle = GetWindowLongPtrW(windowHandle, GWL_EXSTYLE);
+    if (extendedStyle == 0 && GetLastError() != ERROR_SUCCESS) {
+        return WIN_SetError("Could not get window style");
+    }
+
+    if ((extendedStyle & WS_EX_NOREDIRECTIONBITMAP) != 0) {
+        return true;
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    previousStyle = SetWindowLongPtrW(windowHandle, GWL_EXSTYLE, extendedStyle | WS_EX_NOREDIRECTIONBITMAP);
+    if (previousStyle == 0 && GetLastError() != ERROR_SUCCESS) {
+        return WIN_SetError("Could not enable DirectComposition window style");
+    }
+
+    windowData->addedNoRedirectionBitmapStyle = true;
+    return true;
+}
+
+static void D3D12_INTERNAL_DisableCompositionWindowStyle(D3D12WindowData *windowData)
+{
+    HWND windowHandle;
+    LONG_PTR extendedStyle;
+
+    if (!windowData->addedNoRedirectionBitmapStyle) {
+        return;
+    }
+
+    windowHandle = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(windowData->window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (windowHandle) {
+        SetLastError(ERROR_SUCCESS);
+        extendedStyle = GetWindowLongPtrW(windowHandle, GWL_EXSTYLE);
+        if (extendedStyle != 0 || GetLastError() == ERROR_SUCCESS) {
+            SetWindowLongPtrW(windowHandle, GWL_EXSTYLE, extendedStyle & ~WS_EX_NOREDIRECTIONBITMAP);
+        }
+    }
+
+    windowData->addedNoRedirectionBitmapStyle = false;
+}
+
+static void D3D12_INTERNAL_DestroyComposition(D3D12WindowData *windowData)
+{
+    if (windowData->compositionVisual) {
+        windowData->compositionVisual->lpVtbl->SetContent(windowData->compositionVisual, NULL);
+    }
+    if (windowData->compositionTarget) {
+        windowData->compositionTarget->lpVtbl->SetRoot(windowData->compositionTarget, NULL);
+    }
+    if (windowData->compositionDevice) {
+        windowData->compositionDevice->lpVtbl->Commit(windowData->compositionDevice);
+    }
+    if (windowData->compositionVisual) {
+        windowData->compositionVisual->lpVtbl->Release(windowData->compositionVisual);
+        windowData->compositionVisual = NULL;
+    }
+    if (windowData->compositionTarget) {
+        windowData->compositionTarget->lpVtbl->Release(windowData->compositionTarget);
+        windowData->compositionTarget = NULL;
+    }
+    if (windowData->compositionDevice) {
+        windowData->compositionDevice->lpVtbl->Release(windowData->compositionDevice);
+        windowData->compositionDevice = NULL;
+    }
+}
+
+static bool D3D12_INTERNAL_CreateComposition(
+    D3D12Renderer *renderer,
+    D3D12WindowData *windowData,
+    HWND windowHandle,
+    IDXGISwapChain3 *swapchain)
+{
+    HRESULT res;
+
+    res = renderer->pDCompositionCreateDevice(
+        NULL,
+        &D3D_IID_IDCompositionDevice,
+        (void **)&windowData->compositionDevice);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not create DirectComposition device", res);
+        goto fail;
+    }
+
+    res = windowData->compositionDevice->lpVtbl->CreateTargetForHwnd(
+        windowData->compositionDevice,
+        windowHandle,
+        TRUE,
+        &windowData->compositionTarget);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not create DirectComposition target", res);
+        goto fail;
+    }
+
+    res = windowData->compositionDevice->lpVtbl->CreateVisual(
+        windowData->compositionDevice,
+        &windowData->compositionVisual);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not create DirectComposition visual", res);
+        goto fail;
+    }
+
+    res = windowData->compositionVisual->lpVtbl->SetContent(windowData->compositionVisual, (IUnknown *)swapchain);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not set DirectComposition visual content", res);
+        goto fail;
+    }
+
+    res = windowData->compositionTarget->lpVtbl->SetRoot(windowData->compositionTarget, windowData->compositionVisual);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not set DirectComposition root visual", res);
+        goto fail;
+    }
+
+    res = windowData->compositionDevice->lpVtbl->Commit(windowData->compositionDevice);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not commit DirectComposition device", res);
+        goto fail;
+    }
+
+    return true;
+
+fail:
+    D3D12_INTERNAL_DestroyComposition(windowData);
+    return false;
+}
+#endif
+
 static bool D3D12_INTERNAL_OnWindowResize(void *userdata, SDL_Event *e)
 {
     SDL_Window *w = (SDL_Window *)userdata;
@@ -6728,6 +6952,9 @@ static bool D3D12_INTERNAL_ResizeSwapchain(
     D3D12Renderer *renderer,
     D3D12WindowData *windowData)
 {
+    UINT width = 0;
+    UINT height = 0;
+
     // Wait so we don't release in-flight views
     D3D12_Wait((SDL_GPURenderer *)renderer);
 
@@ -6885,12 +7112,25 @@ static bool D3D12_INTERNAL_ResizeSwapchain(
         SDL_free(windowData->textureContainers[i].textures);
     }
 
+#ifdef SDL_PLATFORM_WIN32
+    if ((windowData->window->flags & SDL_WINDOW_TRANSPARENT) != 0) {
+        int windowWidth;
+        int windowHeight;
+
+        if (!SDL_GetWindowSizeInPixels(windowData->window, &windowWidth, &windowHeight)) {
+            return false;
+        }
+        width = (UINT)SDL_max(windowWidth, 1);
+        height = (UINT)SDL_max(windowHeight, 1);
+    }
+#endif
+
     // Resize the swapchain
     HRESULT res = IDXGISwapChain_ResizeBuffers(
         windowData->swapchain,
         0, // Keep buffer count the same
-        0, // use client window width
-        0, // use client window height
+        width,
+        height,
         DXGI_FORMAT_UNKNOWN, // Keep the old format
         renderer->supportsTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     CHECK_D3D12_ERROR_AND_RETURN("Could not resize swapchain buffers", false);
@@ -6934,6 +7174,9 @@ static void D3D12_INTERNAL_DestroySwapchain(
         SDL_free(windowData->textureContainers[i].textures);
     }
 
+#ifdef SDL_PLATFORM_WIN32
+    D3D12_INTERNAL_DestroyComposition(windowData);
+#endif
     IDXGISwapChain_Release(windowData->swapchain);
     windowData->swapchain = NULL;
 }
@@ -6952,6 +7195,9 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     IDXGISwapChain1 *swapchain;
     IDXGISwapChain3 *swapchain3;
     HRESULT res;
+#ifdef SDL_PLATFORM_WIN32
+    bool transparent = (windowData->window->flags & SDL_WINDOW_TRANSPARENT) != 0;
+#endif
 
     // Get the DXGI handle
 #ifdef _WIN32
@@ -6979,6 +7225,22 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     swapchainDesc.Flags = 0;
     swapchainDesc.Stereo = 0;
 
+#ifdef SDL_PLATFORM_WIN32
+    if (transparent) {
+        int width;
+        int height;
+
+        if (!SDL_GetWindowSizeInPixels(windowData->window, &width, &height)) {
+            return false;
+        }
+        swapchainDesc.Width = (UINT)SDL_max(width, 1);
+        swapchainDesc.Height = (UINT)SDL_max(height, 1);
+        swapchainDesc.Scaling = DXGI_SCALING_STRETCH;
+        swapchainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        swapchainDesc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+    }
+#endif
+
     // Initialize the fullscreen descriptor (if needed)
     fullscreenDesc.RefreshRate.Numerator = 0;
     fullscreenDesc.RefreshRate.Denominator = 0;
@@ -6997,14 +7259,26 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     }
 
     // Create the swapchain!
-    res = IDXGIFactory4_CreateSwapChainForHwnd(
-        renderer->factory,
-        (IUnknown *)renderer->commandQueue,
-        dxgiHandle,
-        &swapchainDesc,
-        &fullscreenDesc,
-        NULL,
-        &swapchain);
+#ifdef SDL_PLATFORM_WIN32
+    if (transparent) {
+        res = IDXGIFactory4_CreateSwapChainForComposition(
+            renderer->factory,
+            (IUnknown *)renderer->commandQueue,
+            &swapchainDesc,
+            NULL,
+            &swapchain);
+    } else
+#endif
+    {
+        res = IDXGIFactory4_CreateSwapChainForHwnd(
+            renderer->factory,
+            (IUnknown *)renderer->commandQueue,
+            dxgiHandle,
+            &swapchainDesc,
+            &fullscreenDesc,
+            NULL,
+            &swapchain);
+    }
     CHECK_D3D12_ERROR_AND_RETURN("Could not create swapchain", false);
 
     res = IDXGISwapChain1_QueryInterface(
@@ -7013,6 +7287,13 @@ static bool D3D12_INTERNAL_CreateSwapchain(
         (void **)&swapchain3);
     IDXGISwapChain1_Release(swapchain);
     CHECK_D3D12_ERROR_AND_RETURN("Could not create IDXGISwapChain3", false);
+
+#ifdef SDL_PLATFORM_WIN32
+    if (transparent && !D3D12_INTERNAL_CreateComposition(renderer, windowData, dxgiHandle, swapchain3)) {
+        IDXGISwapChain3_Release(swapchain3);
+        return false;
+    }
+#endif
 
     if (swapchainComposition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR) {
         // Support already verified if we hit this block
@@ -7028,34 +7309,46 @@ static bool D3D12_INTERNAL_CreateSwapchain(
      * will silently fail and doesn't even verify arguments or return errors.
      * See https://gamedev.net/forums/topic/634235-dxgidisabling-altenter/4999955/
      */
-    res = IDXGISwapChain3_GetParent(
-        swapchain3,
-        D3D_GUID(D3D_IID_IDXGIFactory1),
-        (void **)&pParent);
-    if (FAILED(res)) {
-        SDL_LogWarn(
-            SDL_LOG_CATEGORY_GPU,
-            "Could not get swapchain parent! Error Code: " HRESULT_FMT,
-            res);
-    } else {
-        // Disable DXGI window crap
-        res = IDXGIFactory1_MakeWindowAssociation(
-            pParent,
-            dxgiHandle,
-            DXGI_MWA_NO_WINDOW_CHANGES);
+#ifdef SDL_PLATFORM_WIN32
+    if (!transparent)
+#endif
+    {
+        res = IDXGISwapChain3_GetParent(
+            swapchain3,
+            D3D_GUID(D3D_IID_IDXGIFactory1),
+            (void **)&pParent);
         if (FAILED(res)) {
             SDL_LogWarn(
                 SDL_LOG_CATEGORY_GPU,
-                "MakeWindowAssociation failed! Error Code: " HRESULT_FMT,
+                "Could not get swapchain parent! Error Code: " HRESULT_FMT,
                 res);
-        }
+        } else {
+            // Disable DXGI window crap
+            res = IDXGIFactory1_MakeWindowAssociation(
+                pParent,
+                dxgiHandle,
+                DXGI_MWA_NO_WINDOW_CHANGES);
+            if (FAILED(res)) {
+                SDL_LogWarn(
+                    SDL_LOG_CATEGORY_GPU,
+                    "MakeWindowAssociation failed! Error Code: " HRESULT_FMT,
+                    res);
+            }
 
-        // We're done with the parent now
-        IDXGIFactory1_Release(pParent);
+            // We're done with the parent now
+            IDXGIFactory1_Release(pParent);
+        }
     }
 
-    IDXGISwapChain3_GetDesc1(swapchain3, &swapchainDesc);
-    CHECK_D3D12_ERROR_AND_RETURN("Failed to retrieve swapchain descriptor!", false);
+    res = IDXGISwapChain3_GetDesc1(swapchain3, &swapchainDesc);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Failed to retrieve swapchain descriptor", res);
+#ifdef SDL_PLATFORM_WIN32
+        D3D12_INTERNAL_DestroyComposition(windowData);
+#endif
+        IDXGISwapChain3_Release(swapchain3);
+        return false;
+    }
 
     // Initialize the swapchain data
     windowData->swapchain = swapchain3;
@@ -7093,6 +7386,10 @@ static bool D3D12_INTERNAL_CreateSwapchain(
                 swapchainComposition,
                 i,
                 &windowData->textureContainers[i])) {
+#ifdef SDL_PLATFORM_WIN32
+            D3D12_INTERNAL_DestroyComposition(windowData);
+#endif
+            windowData->swapchain = NULL;
             IDXGISwapChain3_Release(swapchain3);
             return false;
         }
@@ -7109,6 +7406,16 @@ static bool D3D12_ClaimWindow(
     D3D12Renderer *renderer = (D3D12Renderer *)driverData;
     D3D12WindowData *windowData = D3D12_INTERNAL_FetchWindowData(window);
 
+    if ((window->flags & SDL_WINDOW_TRANSPARENT) != 0) {
+#ifdef SDL_PLATFORM_WIN32
+        if (!renderer->pDCompositionCreateDevice) {
+            SET_STRING_ERROR_AND_RETURN("DirectComposition is not available", false);
+        }
+#else
+        SET_STRING_ERROR_AND_RETURN("The D3D12 GPU driver doesn't support transparent windows on this platform", false);
+#endif
+    }
+
     if (windowData == NULL) {
         windowData = (D3D12WindowData *)SDL_calloc(1, sizeof(D3D12WindowData));
         if (!windowData) {
@@ -7117,6 +7424,20 @@ static bool D3D12_ClaimWindow(
         windowData->window = window;
         windowData->renderer = renderer;
         windowData->refcount = 1;
+
+#ifdef SDL_PLATFORM_WIN32
+        if ((window->flags & SDL_WINDOW_TRANSPARENT) != 0) {
+            HWND windowHandle = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+            if (!windowHandle) {
+                SDL_free(windowData);
+                return SDL_SetError("Couldn't get window handle");
+            }
+            if (!D3D12_INTERNAL_EnableCompositionWindowStyle(windowData, windowHandle)) {
+                SDL_free(windowData);
+                return false;
+            }
+        }
+#endif
 
         if (D3D12_INTERNAL_CreateSwapchain(renderer, windowData, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) {
             SDL_SetPointerProperty(SDL_GetWindowProperties(window), WINDOW_PROPERTY_DATA, windowData);
@@ -7136,6 +7457,9 @@ static bool D3D12_ClaimWindow(
 
             return true;
         } else {
+#ifdef SDL_PLATFORM_WIN32
+            D3D12_INTERNAL_DisableCompositionWindowStyle(windowData);
+#endif
             SDL_free(windowData);
             return false;
         }
@@ -7178,6 +7502,9 @@ static void D3D12_ReleaseWindow(
     }
 
     D3D12_INTERNAL_DestroySwapchain(renderer, windowData);
+#ifdef SDL_PLATFORM_WIN32
+    D3D12_INTERNAL_DisableCompositionWindowStyle(windowData);
+#endif
 
     SDL_LockMutex(renderer->windowLock);
     for (Uint32 i = 0; i < renderer->claimedWindowCount; i += 1) {
@@ -9331,6 +9658,19 @@ static SDL_GPUDevice *D3D12_CreateDevice(bool debugMode, bool preferLowPower, SD
         D3D12_INTERNAL_DestroyRenderer(renderer);
         SET_STRING_ERROR_AND_RETURN("Could not find " DXGI_DLL, NULL);
     }
+
+#ifdef SDL_PLATFORM_WIN32
+    renderer->dcomp_dll = SDL_LoadObject(DCOMP_DLL);
+    if (renderer->dcomp_dll) {
+        renderer->pDCompositionCreateDevice = (pfnDCompositionCreateDevice)SDL_LoadFunction(
+            renderer->dcomp_dll,
+            "DCompositionCreateDevice");
+        if (!renderer->pDCompositionCreateDevice) {
+            SDL_UnloadObject(renderer->dcomp_dll);
+            renderer->dcomp_dll = NULL;
+        }
+    }
+#endif
 
 #ifdef HAVE_IDXGIINFOQUEUE
     // Initialize the DXGI debug layer, if applicable
