@@ -43,6 +43,187 @@
 #include <shobjidl.h>
 #endif
 
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+typedef struct SDL_IDCompositionDevice SDL_IDCompositionDevice;
+typedef struct SDL_IDCompositionTarget SDL_IDCompositionTarget;
+typedef struct SDL_IDCompositionVisual SDL_IDCompositionVisual;
+
+typedef struct SDL_IDCompositionDeviceVtbl
+{
+    HRESULT(STDMETHODCALLTYPE *QueryInterface)(SDL_IDCompositionDevice *device, const IID *iid, void **object);
+    ULONG(STDMETHODCALLTYPE *AddRef)(SDL_IDCompositionDevice *device);
+    ULONG(STDMETHODCALLTYPE *Release)(SDL_IDCompositionDevice *device);
+    HRESULT(STDMETHODCALLTYPE *Commit)(SDL_IDCompositionDevice *device);
+    void *reserved0;
+    void *reserved1;
+    HRESULT(STDMETHODCALLTYPE *CreateTargetForHwnd)(SDL_IDCompositionDevice *device, HWND window, BOOL topmost, SDL_IDCompositionTarget **target);
+    HRESULT(STDMETHODCALLTYPE *CreateVisual)(SDL_IDCompositionDevice *device, SDL_IDCompositionVisual **visual);
+} SDL_IDCompositionDeviceVtbl;
+
+struct SDL_IDCompositionDevice
+{
+    SDL_IDCompositionDeviceVtbl *lpVtbl;
+};
+
+typedef struct SDL_IDCompositionTargetVtbl
+{
+    HRESULT(STDMETHODCALLTYPE *QueryInterface)(SDL_IDCompositionTarget *target, const IID *iid, void **object);
+    ULONG(STDMETHODCALLTYPE *AddRef)(SDL_IDCompositionTarget *target);
+    ULONG(STDMETHODCALLTYPE *Release)(SDL_IDCompositionTarget *target);
+    HRESULT(STDMETHODCALLTYPE *SetRoot)(SDL_IDCompositionTarget *target, SDL_IDCompositionVisual *visual);
+} SDL_IDCompositionTargetVtbl;
+
+struct SDL_IDCompositionTarget
+{
+    SDL_IDCompositionTargetVtbl *lpVtbl;
+};
+
+typedef struct SDL_IDCompositionVisualVtbl
+{
+    HRESULT(STDMETHODCALLTYPE *QueryInterface)(SDL_IDCompositionVisual *visual, const IID *iid, void **object);
+    ULONG(STDMETHODCALLTYPE *AddRef)(SDL_IDCompositionVisual *visual);
+    ULONG(STDMETHODCALLTYPE *Release)(SDL_IDCompositionVisual *visual);
+    void *reserved0;
+    void *reserved1;
+    void *reserved2;
+    void *reserved3;
+    void *reserved4;
+    void *reserved5;
+    void *reserved6;
+    void *reserved7;
+    void *reserved8;
+    void *reserved9;
+    void *reserved10;
+    void *reserved11;
+    HRESULT(STDMETHODCALLTYPE *SetContent)(SDL_IDCompositionVisual *visual, IUnknown *content);
+} SDL_IDCompositionVisualVtbl;
+
+struct SDL_IDCompositionVisual
+{
+    SDL_IDCompositionVisualVtbl *lpVtbl;
+};
+
+struct SDL_WindowComposition
+{
+    SDL_IDCompositionDevice *device;
+    SDL_IDCompositionTarget *target;
+    SDL_IDCompositionVisual *visual;
+};
+
+static const IID WIN_IID_IDCompositionDevice = { 0xc37ea93a, 0xe7aa, 0x450d, { 0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3 } };
+
+void WIN_DestroyWindowComposition(SDL_WindowComposition *composition)
+{
+    if (!composition) {
+        return;
+    }
+
+    if (composition->visual) {
+        composition->visual->lpVtbl->SetContent(composition->visual, NULL);
+    }
+    if (composition->target) {
+        composition->target->lpVtbl->SetRoot(composition->target, NULL);
+    }
+    if (composition->device) {
+        composition->device->lpVtbl->Commit(composition->device);
+    }
+    if (composition->visual) {
+        composition->visual->lpVtbl->Release(composition->visual);
+    }
+    if (composition->target) {
+        composition->target->lpVtbl->Release(composition->target);
+    }
+    if (composition->device) {
+        composition->device->lpVtbl->Release(composition->device);
+    }
+    SDL_free(composition);
+}
+
+SDL_WindowComposition *WIN_CreateWindowComposition(SDL_Window *window, void *content)
+{
+    SDL_WindowComposition *composition;
+    SDL_VideoData *videodata;
+    DWORD process_id;
+    HWND hwnd;
+    HRESULT result;
+
+    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!hwnd) {
+        SDL_SetError("Couldn't get window handle");
+        return NULL;
+    }
+
+    process_id = 0;
+    if (GetWindowThreadProcessId(hwnd, &process_id) == 0) {
+        WIN_SetError("GetWindowThreadProcessId()");
+        return NULL;
+    }
+    if (process_id != GetCurrentProcessId()) {
+        SDL_SetError("DirectComposition requires a window owned by the current process");
+        return NULL;
+    }
+
+    videodata = window->internal->videodata;
+    if (!videodata->DCompositionCreateDevice) {
+        SDL_SetError("DirectComposition is not available");
+        return NULL;
+    }
+
+    composition = (SDL_WindowComposition *)SDL_calloc(1, sizeof(*composition));
+    if (!composition) {
+        return NULL;
+    }
+
+    result = videodata->DCompositionCreateDevice(NULL, &WIN_IID_IDCompositionDevice, (void **)&composition->device);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("DCompositionCreateDevice", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    result = composition->device->lpVtbl->CreateTargetForHwnd(
+        composition->device,
+        hwnd,
+        (window->flags & SDL_WINDOW_TRANSPARENT) ? TRUE : FALSE,
+        &composition->target);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("IDCompositionDevice::CreateTargetForHwnd", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    result = composition->device->lpVtbl->CreateVisual(composition->device, &composition->visual);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("IDCompositionDevice::CreateVisual", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    result = composition->visual->lpVtbl->SetContent(composition->visual, (IUnknown *)content);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("IDCompositionVisual::SetContent", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    result = composition->target->lpVtbl->SetRoot(composition->target, composition->visual);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("IDCompositionTarget::SetRoot", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    result = composition->device->lpVtbl->Commit(composition->device);
+    if (FAILED(result)) {
+        WIN_SetErrorFromHRESULT("IDCompositionDevice::Commit", result);
+        WIN_DestroyWindowComposition(composition);
+        return NULL;
+    }
+
+    return composition;
+}
+#endif
+
 // Windows CE compatibility
 #ifndef SWP_NOCOPYBITS
 #define SWP_NOCOPYBITS 0
