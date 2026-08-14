@@ -187,6 +187,7 @@ typedef struct
     IDXGIAdapter4 *dxgiAdapter;
     IDXGIDebug *dxgiDebug;
     IDXGISwapChain4 *swapChain;
+    SDL_WindowComposition *composition;
 #endif
     ID3D12Device1 *d3dDevice;
     ID3D12Debug *debugInterface;
@@ -385,6 +386,8 @@ static void D3D12_ReleaseAll(SDL_Renderer *renderer)
         int i;
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+        WIN_DestroyWindowComposition(data->composition);
+        data->composition = NULL;
         D3D_SAFE_RELEASE(data->dxgiFactory);
         D3D_SAFE_RELEASE(data->dxgiAdapter);
         D3D_SAFE_RELEASE(data->swapChain);
@@ -1209,13 +1212,16 @@ static HRESULT D3D12_CreateSwapChain(SDL_Renderer *renderer, int w, int h)
 {
     D3D12_RenderData *data = (D3D12_RenderData *)renderer->internal;
     IDXGISwapChain1 *swapChain = NULL;
+    const bool transparent = (renderer->window->flags & SDL_WINDOW_TRANSPARENT) != 0;
+    bool useComposition = transparent || (renderer->window->flags & SDL_WINDOW_EXTERNAL) == 0;
+    bool compositionErrorSet = false;
     HRESULT result = S_OK;
 
     // Create a swap chain using the same adapter as the existing Direct3D device.
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
     SDL_zero(swapChainDesc);
-    swapChainDesc.Width = w;
-    swapChainDesc.Height = h;
+    swapChainDesc.Width = useComposition ? (UINT)SDL_max(w, 1) : (UINT)w;
+    swapChainDesc.Height = useComposition ? (UINT)SDL_max(h, 1) : (UINT)h;
     switch (renderer->output_colorspace) {
     case SDL_COLORSPACE_SRGB_LINEAR:
         swapChainDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1235,14 +1241,19 @@ static HRESULT D3D12_CreateSwapChain(SDL_Renderer *renderer, int w, int h)
     swapChainDesc.SampleDesc.Quality = 0;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.BufferCount = 2; // Use double-buffering to minimize latency.
-    if (WIN_IsWindows8OrGreater()) {
+    if (useComposition) {
+        swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+    } else if (WIN_IsWindows8OrGreater()) {
         swapChainDesc.Scaling = DXGI_SCALING_NONE;
     } else {
         swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
     }
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;               // All Windows Store apps must use this SwapEffect.
-    swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | // To support SetMaximumFrameLatency
-                          DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;                  // To support presenting with allow tearing on
+    swapChainDesc.AlphaMode = transparent ? DXGI_ALPHA_MODE_PREMULTIPLIED : (useComposition ? DXGI_ALPHA_MODE_IGNORE : DXGI_ALPHA_MODE_UNSPECIFIED);
+    swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT; // To support SetMaximumFrameLatency
+    if (!transparent) {
+        swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
 
     HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(renderer->window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
     if (!hwnd) {
@@ -1251,19 +1262,52 @@ static HRESULT D3D12_CreateSwapChain(SDL_Renderer *renderer, int w, int h)
         goto done;
     }
 
-    result = IDXGIFactory2_CreateSwapChainForHwnd(data->dxgiFactory,
-                      (IUnknown *)data->commandQueue,
-                      hwnd,
-                      &swapChainDesc,
-                      NULL,
-                      NULL, // Allow on all displays.
-                      &swapChain);
+create_swapchain:
+    if (useComposition) {
+        result = IDXGIFactory2_CreateSwapChainForComposition(data->dxgiFactory,
+                          (IUnknown *)data->commandQueue,
+                          &swapChainDesc,
+                          NULL, // Allow on all displays.
+                          &swapChain);
+        if (SUCCEEDED(result)) {
+            data->composition = WIN_CreateWindowComposition(renderer->window, (IUnknown *)swapChain);
+            if (!data->composition) {
+                compositionErrorSet = true;
+                result = E_FAIL;
+            }
+        }
+
+        if (FAILED(result) && !transparent) {
+            D3D_SAFE_RELEASE(swapChain);
+            SDL_ClearError();
+            compositionErrorSet = false;
+            useComposition = false;
+            swapChainDesc.Width = (UINT)w;
+            swapChainDesc.Height = (UINT)h;
+            swapChainDesc.Scaling = WIN_IsWindows8OrGreater() ? DXGI_SCALING_NONE : DXGI_SCALING_STRETCH;
+            swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        }
+    }
+
+    if (!useComposition) {
+        result = IDXGIFactory2_CreateSwapChainForHwnd(data->dxgiFactory,
+                          (IUnknown *)data->commandQueue,
+                          hwnd,
+                          &swapChainDesc,
+                          NULL,
+                          NULL, // Allow on all displays.
+                          &swapChain);
+    }
     if (FAILED(result)) {
-        WIN_SetErrorFromHRESULT("IDXGIFactory2::CreateSwapChainForHwnd", result);
+        if (!compositionErrorSet) {
+            WIN_SetErrorFromHRESULT(useComposition ? "IDXGIFactory2::CreateSwapChainForComposition" : "IDXGIFactory2::CreateSwapChainForHwnd", result);
+        }
         goto done;
     }
 
-    IDXGIFactory6_MakeWindowAssociation(data->dxgiFactory, hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
+    if (!useComposition) {
+        IDXGIFactory6_MakeWindowAssociation(data->dxgiFactory, hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
+    }
 
     result = IDXGISwapChain1_QueryInterface(swapChain, D3D_GUID(SDL_IID_IDXGISwapChain4), (void **)&data->swapChain);
     if (FAILED(result)) {
@@ -1308,11 +1352,33 @@ static HRESULT D3D12_CreateSwapChain(SDL_Renderer *renderer, int w, int h)
         // Not the default, we're not going to be able to present in this colorspace
         SDL_SetError("Unsupported output colorspace");
         result = DXGI_ERROR_UNSUPPORTED;
+        goto done;
     }
 
     SDL_SetPointerProperty(SDL_GetRendererProperties(renderer), SDL_PROP_RENDERER_D3D12_SWAPCHAIN_POINTER, data->swapChain);
 
 done:
+    if (FAILED(result) && useComposition && !transparent) {
+        WIN_DestroyWindowComposition(data->composition);
+        data->composition = NULL;
+        D3D_SAFE_RELEASE(data->swapChain);
+        D3D_SAFE_RELEASE(swapChain);
+        SDL_ClearError();
+        compositionErrorSet = false;
+        useComposition = false;
+        swapChainDesc.Width = (UINT)w;
+        swapChainDesc.Height = (UINT)h;
+        swapChainDesc.Scaling = WIN_IsWindows8OrGreater() ? DXGI_SCALING_NONE : DXGI_SCALING_STRETCH;
+        swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        result = S_OK;
+        goto create_swapchain;
+    }
+    if (FAILED(result)) {
+        SDL_SetPointerProperty(SDL_GetRendererProperties(renderer), SDL_PROP_RENDERER_D3D12_SWAPCHAIN_POINTER, NULL);
+        WIN_DestroyWindowComposition(data->composition);
+        data->composition = NULL;
+        D3D_SAFE_RELEASE(data->swapChain);
+    }
     D3D_SAFE_RELEASE(swapChain);
     return result;
 }
@@ -1340,13 +1406,22 @@ static HRESULT D3D12_CreateWindowSizeDependentResources(SDL_Renderer *renderer)
     /* The width and height of the swap chain must be based on the display's
      * non-rotated size.
      */
-    SDL_GetWindowSizeInPixels(renderer->window, &w, &h);
+    if (!SDL_GetWindowSizeInPixels(renderer->window, &w, &h)) {
+        result = E_FAIL;
+        goto done;
+    }
     data->rotation = D3D12_GetCurrentRotation();
     if (D3D12_IsDisplayRotated90Degrees(data->rotation)) {
         int tmp = w;
         w = h;
         h = tmp;
     }
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+    if (data->composition) {
+        w = SDL_max(w, 1);
+        h = SDL_max(h, 1);
+    }
+#endif
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
     if (data->swapChain) {
@@ -1368,7 +1443,7 @@ static HRESULT D3D12_CreateWindowSizeDependentResources(SDL_Renderer *renderer)
     }
 
     // Set the proper rotation for the swap chain.
-    if (WIN_IsWindows8OrGreater()) {
+    if (!data->composition && WIN_IsWindows8OrGreater()) {
         if (data->swapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL) {
             result = IDXGISwapChain4_SetRotation(data->swapChain, data->rotation); // NOLINT(clang-analyzer-core.NullDereference)
             if (FAILED(result)) {
@@ -3568,7 +3643,7 @@ static bool D3D12_SetVSync(SDL_Renderer *renderer, const int vsync)
         data->presentFlags = 0;
     } else {
         data->syncInterval = 0;
-        data->presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+        data->presentFlags = (renderer->window->flags & SDL_WINDOW_TRANSPARENT) ? 0 : DXGI_PRESENT_ALLOW_TEARING;
     }
     return true;
 }
@@ -3582,10 +3657,11 @@ bool D3D12_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, SDL_Proper
         return SDL_SetError("Couldn't get window handle");
     }
 
+#if defined(SDL_PLATFORM_XBOXONE) || defined(SDL_PLATFORM_XBOXSERIES)
     if (SDL_GetWindowFlags(window) & SDL_WINDOW_TRANSPARENT) {
-		// D3D12 removed the swap effect needed to support transparent windows, use D3D11 instead
-		return SDL_SetError("The direct3d12 renderer doesn't work with transparent windows");
-	}
+        return SDL_SetError("The direct3d12 renderer doesn't support transparent windows on Xbox");
+    }
+#endif
 
     SDL_SetupRendererColorspace(renderer, create_props);
 
@@ -3639,7 +3715,7 @@ bool D3D12_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, SDL_Proper
     SDL_SetNumberProperty(SDL_GetRendererProperties(renderer), SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 16384);
 
     data->syncInterval = 0;
-    data->presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+    data->presentFlags = (window->flags & SDL_WINDOW_TRANSPARENT) ? 0 : DXGI_PRESENT_ALLOW_TEARING;
 
     /* HACK: make sure the SDL_Renderer references the SDL_Window data now, in
      * order to give init functions access to the underlying window handle:

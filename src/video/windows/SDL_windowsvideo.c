@@ -223,6 +223,9 @@ static void WIN_DeleteDevice(SDL_VideoDevice *device)
     if (data->dwmapiDLL) {
         SDL_UnloadObject(data->dwmapiDLL);
     }
+    if (data->dcompDLL) {
+        SDL_UnloadObject(data->dcompDLL);
+    }
 #endif
 #ifdef HAVE_DXGI_H
     if (data->pDXGIFactory) {
@@ -304,6 +307,18 @@ static SDL_VideoDevice *WIN_CreateDevice(void)
         data->DwmEnableBlurBehindWindow = (HRESULT (WINAPI *)(HWND hwnd, const DWM_BLURBEHIND *pBlurBehind))SDL_LoadFunction(data->dwmapiDLL, "DwmEnableBlurBehindWindow");
         data->DwmSetWindowAttribute = (HRESULT (WINAPI *)(HWND hwnd, DWORD dwAttribute, LPCVOID pvAttribute, DWORD cbAttribute))SDL_LoadFunction(data->dwmapiDLL, "DwmSetWindowAttribute");
         /* *INDENT-ON* */ // clang-format on
+    } else {
+        SDL_ClearError();
+    }
+
+    data->dcompDLL = SDL_LoadObject("DCOMP.DLL");
+    if (data->dcompDLL) {
+        data->DCompositionCreateDevice = (WIN_DCompositionCreateDevice_t)SDL_LoadFunction(data->dcompDLL, "DCompositionCreateDevice");
+        if (!data->DCompositionCreateDevice) {
+            SDL_UnloadObject(data->dcompDLL);
+            data->dcompDLL = NULL;
+            SDL_ClearError();
+        }
     } else {
         SDL_ClearError();
     }

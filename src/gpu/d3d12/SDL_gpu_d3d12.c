@@ -26,6 +26,9 @@
 #include "../../events/SDL_windowevents_c.h"
 #include "../../core/windows/SDL_windows.h"
 #include "../../video/directx/SDL_d3d12.h"
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+#include "../../video/windows/SDL_windowswindow.h"
+#endif
 
 #ifdef HAVE_GPU_OPENXR
 #define XR_USE_GRAPHICS_API_D3D12 1
@@ -882,6 +885,9 @@ typedef struct D3D12WindowData
     D3D12XBOX_FRAME_PIPELINE_TOKEN frameToken;
 #else
     IDXGISwapChain3 *swapchain;
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    SDL_WindowComposition *composition;
+#endif
 #endif
     SDL_GPUPresentMode present_mode;
     SDL_GPUSwapchainComposition swapchainComposition;
@@ -6582,7 +6588,7 @@ static bool D3D12_SupportsSwapchainComposition(
     D3D12Renderer *renderer = (D3D12Renderer *)driverData;
     DXGI_FORMAT format;
     D3D12_FEATURE_DATA_FORMAT_SUPPORT formatSupport;
-    Uint32 colorSpaceSupport;
+    Uint32 colorSpaceSupport = 0;
     HRESULT res;
 
     format = SwapchainCompositionToTextureFormat[swapchainComposition];
@@ -6609,10 +6615,17 @@ static bool D3D12_SupportsSwapchainComposition(
 
     // Check the color space support if necessary
     if (swapchainComposition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR) {
-        IDXGISwapChain3_CheckColorSpaceSupport(
+        if (!windowData->swapchain) {
+            return false;
+        }
+
+        res = IDXGISwapChain3_CheckColorSpaceSupport(
             windowData->swapchain,
             SwapchainCompositionToColorSpace[swapchainComposition],
             &colorSpaceSupport);
+        if (FAILED(res)) {
+            return false;
+        }
 
         if (!(colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
             return false;
@@ -6865,15 +6878,36 @@ static bool D3D12_INTERNAL_InitializeSwapchainTexture(
     return true;
 }
 
+static void D3D12_INTERNAL_DestroySwapchain(
+    D3D12Renderer *renderer,
+    D3D12WindowData *windowData);
+
 static bool D3D12_INTERNAL_ResizeSwapchain(
     D3D12Renderer *renderer,
     D3D12WindowData *windowData)
 {
+    const Uint32 swapchainTextureCount = windowData->swapchainTextureCount;
+    UINT width = 0;
+    UINT height = 0;
+
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    if (windowData->composition) {
+        int windowWidth;
+        int windowHeight;
+
+        if (!SDL_GetWindowSizeInPixels(windowData->window, &windowWidth, &windowHeight)) {
+            return false;
+        }
+        width = (UINT)SDL_max(windowWidth, 1);
+        height = (UINT)SDL_max(windowHeight, 1);
+    }
+#endif
+
     // Wait so we don't release in-flight views
     D3D12_Wait((SDL_GPURenderer *)renderer);
 
     // Release views and clean up
-    for (Uint32 i = 0; i < windowData->swapchainTextureCount; i += 1) {
+    for (Uint32 i = 0; i < swapchainTextureCount; i += 1) {
         D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
             &windowData->textureContainers[i].activeTexture->srvHandle);
         D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
@@ -6889,26 +6923,43 @@ static bool D3D12_INTERNAL_ResizeSwapchain(
     HRESULT res = IDXGISwapChain_ResizeBuffers(
         windowData->swapchain,
         0, // Keep buffer count the same
-        0, // use client window width
-        0, // use client window height
+        width,
+        height,
         DXGI_FORMAT_UNKNOWN, // Keep the old format
-        renderer->supportsTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
-    CHECK_D3D12_ERROR_AND_RETURN("Could not resize swapchain buffers", false);
+        (renderer->supportsTearing && (windowData->window->flags & SDL_WINDOW_TRANSPARENT) == 0) ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Could not resize swapchain buffers", res);
+        windowData->swapchainTextureCount = 0;
+        D3D12_INTERNAL_DestroySwapchain(renderer, windowData);
+        return false;
+    }
 
     // Create texture object for the swapchain
-    for (Uint32 i = 0; i < windowData->swapchainTextureCount; i += 1) {
+    for (Uint32 i = 0; i < swapchainTextureCount; i += 1) {
         if (!D3D12_INTERNAL_InitializeSwapchainTexture(
                 renderer,
                 windowData->swapchain,
                 windowData->swapchainComposition,
                 i,
                 &windowData->textureContainers[i])) {
+            for (Uint32 j = 0; j < i; j += 1) {
+                D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
+                    &windowData->textureContainers[j].activeTexture->srvHandle);
+                D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
+                    &windowData->textureContainers[j].activeTexture->subresources[0].rtvHandles[0]);
+                SDL_free(windowData->textureContainers[j].activeTexture->subresources[0].rtvHandles);
+                SDL_free(windowData->textureContainers[j].activeTexture->subresources);
+                SDL_free(windowData->textureContainers[j].activeTexture);
+                SDL_free(windowData->textureContainers[j].textures);
+            }
+            windowData->swapchainTextureCount = 0;
+            D3D12_INTERNAL_DestroySwapchain(renderer, windowData);
             return false;
         }
     }
 
     DXGI_SWAP_CHAIN_DESC1 swapchainDesc;
-    IDXGISwapChain3_GetDesc1(windowData->swapchain, &swapchainDesc);
+    res = IDXGISwapChain3_GetDesc1(windowData->swapchain, &swapchainDesc);
     CHECK_D3D12_ERROR_AND_RETURN("Failed to retrieve swapchain descriptor!", false);
 
     windowData->width = swapchainDesc.Width;
@@ -6921,6 +6972,15 @@ static void D3D12_INTERNAL_DestroySwapchain(
     D3D12Renderer *renderer,
     D3D12WindowData *windowData)
 {
+    if (!windowData->swapchain) {
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+        WIN_DestroyWindowComposition(windowData->composition);
+        windowData->composition = NULL;
+#endif
+        windowData->swapchainTextureCount = 0;
+        return;
+    }
+
     // Release views and clean up
     for (Uint32 i = 0; i < windowData->swapchainTextureCount; i += 1) {
         D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
@@ -6934,6 +6994,10 @@ static void D3D12_INTERNAL_DestroySwapchain(
         SDL_free(windowData->textureContainers[i].textures);
     }
 
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    WIN_DestroyWindowComposition(windowData->composition);
+    windowData->composition = NULL;
+#endif
     IDXGISwapChain_Release(windowData->swapchain);
     windowData->swapchain = NULL;
 }
@@ -6949,9 +7013,14 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc;
     DXGI_FORMAT swapchainFormat;
     IDXGIFactory1 *pParent;
-    IDXGISwapChain1 *swapchain;
-    IDXGISwapChain3 *swapchain3;
+    IDXGISwapChain1 *swapchain = NULL;
+    IDXGISwapChain3 *swapchain3 = NULL;
+    bool compositionErrorSet = false;
     HRESULT res;
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    const bool transparent = (windowData->window->flags & SDL_WINDOW_TRANSPARENT) != 0;
+    bool useComposition = transparent || (windowData->window->flags & SDL_WINDOW_EXTERNAL) == 0;
+#endif
 
     // Get the DXGI handle
 #ifdef _WIN32
@@ -6979,6 +7048,22 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     swapchainDesc.Flags = 0;
     swapchainDesc.Stereo = 0;
 
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    if (useComposition) {
+        int width;
+        int height;
+
+        if (!SDL_GetWindowSizeInPixels(windowData->window, &width, &height)) {
+            return false;
+        }
+        swapchainDesc.Width = (UINT)SDL_max(width, 1);
+        swapchainDesc.Height = (UINT)SDL_max(height, 1);
+        swapchainDesc.Scaling = DXGI_SCALING_STRETCH;
+        swapchainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        swapchainDesc.AlphaMode = transparent ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE;
+    }
+#endif
+
     // Initialize the fullscreen descriptor (if needed)
     fullscreenDesc.RefreshRate.Numerator = 0;
     fullscreenDesc.RefreshRate.Denominator = 0;
@@ -6986,7 +7071,11 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     fullscreenDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
     fullscreenDesc.Windowed = true;
 
-    if (renderer->supportsTearing) {
+    if (renderer->supportsTearing
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+        && !transparent
+#endif
+    ) {
         swapchainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     } else {
         swapchainDesc.Flags = 0;
@@ -6997,22 +7086,78 @@ static bool D3D12_INTERNAL_CreateSwapchain(
     }
 
     // Create the swapchain!
-    res = IDXGIFactory4_CreateSwapChainForHwnd(
-        renderer->factory,
-        (IUnknown *)renderer->commandQueue,
-        dxgiHandle,
-        &swapchainDesc,
-        &fullscreenDesc,
-        NULL,
-        &swapchain);
-    CHECK_D3D12_ERROR_AND_RETURN("Could not create swapchain", false);
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    if (useComposition) {
+        res = IDXGIFactory4_CreateSwapChainForComposition(
+            renderer->factory,
+            (IUnknown *)renderer->commandQueue,
+            &swapchainDesc,
+            NULL,
+            &swapchain);
+        if (SUCCEEDED(res)) {
+            windowData->composition = WIN_CreateWindowComposition(windowData->window, (IUnknown *)swapchain);
+            if (!windowData->composition) {
+                compositionErrorSet = true;
+                res = E_FAIL;
+            }
+        }
+
+        if (FAILED(res) && !transparent) {
+            if (swapchain) {
+                IDXGISwapChain1_Release(swapchain);
+                swapchain = NULL;
+            }
+            SDL_ClearError();
+            compositionErrorSet = false;
+            useComposition = false;
+            swapchainDesc.Width = 0;
+            swapchainDesc.Height = 0;
+            swapchainDesc.Scaling = DXGI_SCALING_NONE;
+            swapchainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swapchainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        }
+    }
+
+    if (!useComposition)
+#endif
+    {
+        res = IDXGIFactory4_CreateSwapChainForHwnd(
+            renderer->factory,
+            (IUnknown *)renderer->commandQueue,
+            dxgiHandle,
+            &swapchainDesc,
+            &fullscreenDesc,
+            NULL,
+            &swapchain);
+    }
+    if (FAILED(res)) {
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+        WIN_DestroyWindowComposition(windowData->composition);
+        windowData->composition = NULL;
+#endif
+        if (swapchain) {
+            IDXGISwapChain1_Release(swapchain);
+        }
+        if (!compositionErrorSet) {
+            D3D12_INTERNAL_SetError(renderer, "Could not create swapchain", res);
+        }
+        return false;
+    }
 
     res = IDXGISwapChain1_QueryInterface(
         swapchain,
         D3D_GUID(D3D_IID_IDXGISwapChain3),
         (void **)&swapchain3);
+    if (FAILED(res)) {
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+        WIN_DestroyWindowComposition(windowData->composition);
+        windowData->composition = NULL;
+#endif
+        IDXGISwapChain1_Release(swapchain);
+        D3D12_INTERNAL_SetError(renderer, "Could not create IDXGISwapChain3", res);
+        return false;
+    }
     IDXGISwapChain1_Release(swapchain);
-    CHECK_D3D12_ERROR_AND_RETURN("Could not create IDXGISwapChain3", false);
 
     if (swapchainComposition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR) {
         // Support already verified if we hit this block
@@ -7028,34 +7173,47 @@ static bool D3D12_INTERNAL_CreateSwapchain(
      * will silently fail and doesn't even verify arguments or return errors.
      * See https://gamedev.net/forums/topic/634235-dxgidisabling-altenter/4999955/
      */
-    res = IDXGISwapChain3_GetParent(
-        swapchain3,
-        D3D_GUID(D3D_IID_IDXGIFactory1),
-        (void **)&pParent);
-    if (FAILED(res)) {
-        SDL_LogWarn(
-            SDL_LOG_CATEGORY_GPU,
-            "Could not get swapchain parent! Error Code: " HRESULT_FMT,
-            res);
-    } else {
-        // Disable DXGI window crap
-        res = IDXGIFactory1_MakeWindowAssociation(
-            pParent,
-            dxgiHandle,
-            DXGI_MWA_NO_WINDOW_CHANGES);
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+    if (!useComposition)
+#endif
+    {
+        res = IDXGISwapChain3_GetParent(
+            swapchain3,
+            D3D_GUID(D3D_IID_IDXGIFactory1),
+            (void **)&pParent);
         if (FAILED(res)) {
             SDL_LogWarn(
                 SDL_LOG_CATEGORY_GPU,
-                "MakeWindowAssociation failed! Error Code: " HRESULT_FMT,
+                "Could not get swapchain parent! Error Code: " HRESULT_FMT,
                 res);
-        }
+        } else {
+            // Disable DXGI window crap
+            res = IDXGIFactory1_MakeWindowAssociation(
+                pParent,
+                dxgiHandle,
+                DXGI_MWA_NO_WINDOW_CHANGES);
+            if (FAILED(res)) {
+                SDL_LogWarn(
+                    SDL_LOG_CATEGORY_GPU,
+                    "MakeWindowAssociation failed! Error Code: " HRESULT_FMT,
+                    res);
+            }
 
-        // We're done with the parent now
-        IDXGIFactory1_Release(pParent);
+            // We're done with the parent now
+            IDXGIFactory1_Release(pParent);
+        }
     }
 
-    IDXGISwapChain3_GetDesc1(swapchain3, &swapchainDesc);
-    CHECK_D3D12_ERROR_AND_RETURN("Failed to retrieve swapchain descriptor!", false);
+    res = IDXGISwapChain3_GetDesc1(swapchain3, &swapchainDesc);
+    if (FAILED(res)) {
+        D3D12_INTERNAL_SetError(renderer, "Failed to retrieve swapchain descriptor", res);
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+        WIN_DestroyWindowComposition(windowData->composition);
+        windowData->composition = NULL;
+#endif
+        IDXGISwapChain3_Release(swapchain3);
+        return false;
+    }
 
     // Initialize the swapchain data
     windowData->swapchain = swapchain3;
@@ -7093,6 +7251,22 @@ static bool D3D12_INTERNAL_CreateSwapchain(
                 swapchainComposition,
                 i,
                 &windowData->textureContainers[i])) {
+            for (Uint32 j = 0; j < i; j += 1) {
+                D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
+                    &windowData->textureContainers[j].activeTexture->srvHandle);
+                D3D12_INTERNAL_ReleaseStagingDescriptorHandle(
+                    &windowData->textureContainers[j].activeTexture->subresources[0].rtvHandles[0]);
+                SDL_free(windowData->textureContainers[j].activeTexture->subresources[0].rtvHandles);
+                SDL_free(windowData->textureContainers[j].activeTexture->subresources);
+                SDL_free(windowData->textureContainers[j].activeTexture);
+                SDL_free(windowData->textureContainers[j].textures);
+            }
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+            WIN_DestroyWindowComposition(windowData->composition);
+            windowData->composition = NULL;
+#endif
+            windowData->swapchain = NULL;
+            windowData->swapchainTextureCount = 0;
             IDXGISwapChain3_Release(swapchain3);
             return false;
         }
@@ -7108,6 +7282,12 @@ static bool D3D12_ClaimWindow(
 {
     D3D12Renderer *renderer = (D3D12Renderer *)driverData;
     D3D12WindowData *windowData = D3D12_INTERNAL_FetchWindowData(window);
+
+#if !defined(SDL_VIDEO_DRIVER_WINDOWS) || defined(SDL_PLATFORM_XBOXONE) || defined(SDL_PLATFORM_XBOXSERIES)
+    if ((window->flags & SDL_WINDOW_TRANSPARENT) != 0) {
+        SET_STRING_ERROR_AND_RETURN("The D3D12 GPU driver doesn't support transparent windows on this platform", false);
+    }
+#endif
 
     if (windowData == NULL) {
         windowData = (D3D12WindowData *)SDL_calloc(1, sizeof(D3D12WindowData));
@@ -7573,9 +7753,18 @@ static bool D3D12_INTERNAL_AcquireSwapchainTexture(
     }
 
     if (windowData->needsSwapchainRecreate) {
-        if (!D3D12_INTERNAL_ResizeSwapchain(renderer, windowData)) {
+        if (!windowData->swapchain) {
+            if (!D3D12_INTERNAL_CreateSwapchain(
+                    renderer,
+                    windowData,
+                    windowData->swapchainComposition,
+                    windowData->present_mode)) {
+                return false;
+            }
+        } else if (!D3D12_INTERNAL_ResizeSwapchain(renderer, windowData)) {
             return false;
         }
+        windowData->needsSwapchainRecreate = false;
     }
 
     if (swapchainTextureWidth) {
@@ -8051,6 +8240,7 @@ static bool D3D12_Submit(
 
         Uint32 presentFlags = 0;
         if (renderer->supportsTearing &&
+            (windowData->window->flags & SDL_WINDOW_TRANSPARENT) == 0 &&
             windowData->present_mode == SDL_GPU_PRESENTMODE_IMMEDIATE) {
             presentFlags = DXGI_PRESENT_ALLOW_TEARING;
         }

@@ -126,3 +126,11 @@ theme.
 
 However, it cannot be guaranteed to work on all hardware configurations (an example
 is hybrid GPU systems, such as NVIDIA Optimus laptops).
+
+The Direct3D 12 renderer and SDL GPU D3D12 backend prefer DirectComposition for
+SDL-created windows and fall back to an HWND swap chain for opaque windows when
+DirectComposition is unavailable. Opaque windows created from an existing HWND
+use an HWND swap chain. Transparent windows created from an existing HWND require
+that HWND to belong to the current process. Tearing is not available for
+transparent Direct3D 12 windows. Applications must use premultiplied alpha when
+rendering transparent Direct3D 12 content.

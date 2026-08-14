@@ -510,6 +510,10 @@ typedef struct
     BOOL transition_on_maxed;
 } DWM_BLURBEHIND;
 
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+typedef HRESULT(WINAPI *WIN_DCompositionCreateDevice_t)(void *rendering_device, const IID *iid, void **dcomposition_device);
+#endif
+
 // Private display data
 
 struct SDL_VideoData
@@ -547,6 +551,10 @@ struct SDL_VideoData
     HRESULT (WINAPI *DwmEnableBlurBehindWindow)(HWND hwnd, const DWM_BLURBEHIND *pBlurBehind);
     HRESULT (WINAPI *DwmSetWindowAttribute)(HWND hwnd, DWORD dwAttribute, LPCVOID pvAttribute, DWORD cbAttribute);
     /* *INDENT-ON* */ // clang-format on
+
+    // DirectComposition functions
+    SDL_SharedObject *dcompDLL;
+    WIN_DCompositionCreateDevice_t DCompositionCreateDevice;
 
     // Pen input functions
     /* *INDENT-OFF* */ // clang-format off

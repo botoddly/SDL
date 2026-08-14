@@ -49,6 +49,10 @@ typedef enum SDL_WindowEraseBackgroundMode
     SDL_ERASEBACKGROUNDMODE_ALWAYS,
 } SDL_WindowEraseBackgroundMode;
 
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+typedef struct SDL_WindowComposition SDL_WindowComposition;
+#endif
+
 typedef struct
 {
     void **lpVtbl;
@@ -145,6 +149,11 @@ extern bool WIN_AdjustWindowRect(SDL_Window *window, int *x, int *y, int *width,
 extern bool WIN_AdjustWindowRectForHWND(HWND hwnd, LPRECT lpRect, UINT frame_dpi);
 extern bool WIN_SetWindowParent(SDL_VideoDevice *_this, SDL_Window *window, SDL_Window *parent);
 extern bool WIN_SetWindowModal(SDL_VideoDevice *_this, SDL_Window *window, bool modal);
+
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+extern SDL_WindowComposition *WIN_CreateWindowComposition(SDL_Window *window, void *content);
+extern void WIN_DestroyWindowComposition(SDL_WindowComposition *composition);
+#endif
 
 // Ends C function definitions when using C++
 #ifdef __cplusplus

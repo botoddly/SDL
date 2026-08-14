@@ -96,7 +96,10 @@ SDL_AppResult SDL_AppIterate(void *appstate)
         color_target_info.clear_color.r = (float)(0.5 + 0.5 * SDL_sin(currentTime));
         color_target_info.clear_color.g = (float)(0.5 + 0.5 * SDL_sin(currentTime + SDL_PI_D * 2 / 3));
         color_target_info.clear_color.b = (float)(0.5 + 0.5 * SDL_sin(currentTime + SDL_PI_D * 4 / 3));
-        color_target_info.clear_color.a = 1.0f;
+        color_target_info.clear_color.a = (SDL_GetWindowFlags(state->windows[0]) & SDL_WINDOW_TRANSPARENT) ? 0.5f : 1.0f;
+        color_target_info.clear_color.r *= color_target_info.clear_color.a;
+        color_target_info.clear_color.g *= color_target_info.clear_color.a;
+        color_target_info.clear_color.b *= color_target_info.clear_color.a;
         color_target_info.load_op = SDL_GPU_LOADOP_CLEAR;
         color_target_info.store_op = SDL_GPU_STOREOP_STORE;
 
