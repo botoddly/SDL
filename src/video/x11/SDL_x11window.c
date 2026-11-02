@@ -645,6 +645,15 @@ bool X11_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Properties
     {
         visual = displaydata->visual;
         depth = displaydata->depth;
+
+        // A transparent window that is not OpenGL, e.g. one for Vulkan, needs a visual with alpha, so the compositor blends it with what is beneath.
+        if (window->flags & SDL_WINDOW_TRANSPARENT) {
+            XVisualInfo vinfo;
+            if (X11_XMatchVisualInfo(display, screen, 32, TrueColor, &vinfo)) {
+                visual = vinfo.visual;
+                depth = vinfo.depth;
+            }
+        }
     }
 
     xattr.override_redirect = ((window->flags & SDL_WINDOW_TOOLTIP) || (window->flags & SDL_WINDOW_POPUP_MENU) || force_override_redirect) ? True : False;
