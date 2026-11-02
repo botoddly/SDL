@@ -18,7 +18,8 @@ jobs:
           - { rid: linux-x64, os: ubuntu-22.04, flags: -GNinja, library: lib/libSDL3.so.0, output: libSDL3.so }
           - { rid: linux-arm64, os: ubuntu-22.04-arm, flags: -GNinja, library: lib/libSDL3.so.0, output: libSDL3.so }
           - { rid: win-x64, os: windows-2025, flags: -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded, library: bin/SDL3.dll, output: SDL3.dll }
-          - { rid: osx-arm64, os: macos-15, flags: -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0, library: lib/libSDL3.0.dylib, output: libSDL3.dylib }
+          # Cross-compiled on Intel, because jobs for the arm64 macOS runners wait for capacity until GitHub cancels them
+          - { rid: osx-arm64, os: macos-15-intel, flags: -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0, library: lib/libSDL3.0.dylib, output: libSDL3.dylib }
 
     defaults:
       run:
