@@ -67,10 +67,71 @@ static HRGN GenerateSpanListRegion(SDL_Surface *shape, int offset_x, int offset_
     return mask;
 }
 
+static bool HasOpaquePixel(SDL_Surface *shape)
+{
+    int x, y;
+
+    for (y = 0; y < shape->h; y++) {
+        // SDL_PIXELFORMAT_ARGB32 stores alpha in the first byte of each pixel.
+        const Uint8 *a = (const Uint8 *)shape->pixels + y * shape->pitch;
+        for (x = 0; x < shape->w; x++) {
+            if (*a != SDL_ALPHA_TRANSPARENT) {
+                return true;
+            }
+            a += 4;
+        }
+    }
+    return false;
+}
+
+/* A region clips what a window draws as well as its input, so an empty one would hide a transparent window.
+   A transparent window whose shape has no opaque pixel stays visible and lets all input through instead. */
+static bool SetInputTransparent(SDL_Window *window, bool transparent)
+{
+    SDL_WindowData *data = window->internal;
+    LONG_PTR style = GetWindowLongPtr(data->hwnd, GWL_EXSTYLE);
+    LONG_PTR updated = style;
+
+    if (transparent) {
+        updated |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
+    } else {
+        updated &= ~WS_EX_TRANSPARENT;
+        // SDL_SetWindowOpacity owns WS_EX_LAYERED below full opacity.
+        if (window->opacity == 1.0f) {
+            updated &= ~WS_EX_LAYERED;
+        }
+    }
+
+    if (updated != style) {
+        // SetWindowLongPtr returns the previous style, so only the last error tells a failure from a previous 0.
+        SetLastError(0);
+        if (SetWindowLongPtr(data->hwnd, GWL_EXSTYLE, updated) == 0 && GetLastError() != 0) {
+            return WIN_SetError("SetWindowLongPtr()");
+        }
+    }
+    if (transparent && SetLayeredWindowAttributes(data->hwnd, 0, (BYTE)(window->opacity * 255.0f), LWA_ALPHA) == 0) {
+        return WIN_SetError("SetLayeredWindowAttributes()");
+    }
+    return true;
+}
+
 bool WIN_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape)
 {
     SDL_WindowData *data = window->internal;
     HRGN mask = NULL;
+
+    if (window->flags & SDL_WINDOW_TRANSPARENT) {
+        bool passthrough = shape && !HasOpaquePixel(shape);
+        if (!SetInputTransparent(window, passthrough)) {
+            return false;
+        }
+        if (passthrough) {
+            if (!SetWindowRgn(data->hwnd, NULL, TRUE)) {
+                return WIN_SetError("SetWindowRgn failed");
+            }
+            return true;
+        }
+    }
 
     // Generate a set of spans for the region
     if (shape) {
