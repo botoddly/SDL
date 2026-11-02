@@ -1,0 +1,61 @@
+# Shared SDL3 runtimes for games that replace the SDL of ppy.SDL3-CS. Mirrors ppy/SDL3-CS's External/build.sh,
+# so the runtimes have the same features, platforms and ABI as the binding's own SDL.
+name: Runtimes
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, os: ubuntu-22.04, flags: -GNinja, library: lib/libSDL3.so.0, output: libSDL3.so }
+          - { rid: linux-arm64, os: ubuntu-22.04-arm, flags: -GNinja, library: lib/libSDL3.so.0, output: libSDL3.so }
+          - { rid: win-x64, os: windows-2025, flags: -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded, library: bin/SDL3.dll, output: SDL3.dll }
+          - { rid: osx-arm64, os: macos-15, flags: -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0, library: lib/libSDL3.0.dylib, output: libSDL3.dylib }
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            gcc g++ cmake ninja-build wayland-protocols pkg-config \
+            libasound2-dev libdbus-1-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev \
+            libgtk-3-dev libibus-1.0-dev libpango1.0-dev libpulse-dev libsndio-dev libudev-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev \
+            libxt-dev libxv-dev libxxf86vm-dev libdrm-dev libgbm-dev libpipewire-0.3-dev libdecor-0-dev libjack-dev \
+            libusb-1.0-0-dev
+
+      # As ppy/SDL3-CS does, so the DLL does not need the GameInput runtime
+      - name: Leave out GameInput
+        if: runner.os == 'Windows'
+        run: sed -i 's/#include <gameinput.h>/#_include <gameinput.h>/g' CMakeLists.txt
+
+      - name: Build
+        run: |
+          cmake -B build ${{ matrix.flags }} -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF
+          cmake --build build --config Release
+          cmake --install build --prefix install --config Release
+          mkdir -p "runtimes/${{ matrix.rid }}/native"
+          cp -L "install/${{ matrix.library }}" "runtimes/${{ matrix.rid }}/native/${{ matrix.output }}"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdl3-${{ matrix.rid }}
+          path: runtimes
+          if-no-files-found: error

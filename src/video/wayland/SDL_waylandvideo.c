@@ -39,6 +39,7 @@
 #include "SDL_waylandframebuffer.h"
 #include "SDL_waylandvulkan.h"
 #include "SDL_waylandwindow.h"
+#include "SDL_waylandshape.h"
 
 #include <fcntl.h>
 #include <sys/types.h>
@@ -735,6 +736,7 @@ static SDL_VideoDevice *CreateWaylandDevice(bool require_preferred_protocols)
     device->GetDisplayForWindow = Wayland_GetDisplayForWindow;
     device->DestroyWindow = Wayland_DestroyWindow;
     device->SetWindowHitTest = Wayland_SetWindowHitTest;
+    device->UpdateWindowShape = Wayland_UpdateWindowShape;
     device->FlashWindow = Wayland_FlashWindow;
 #ifdef SDL_USE_LIBDBUS
     device->ApplyWindowProgress = DBUS_ApplyWindowProgress;
