@@ -23,7 +23,7 @@
 #if defined(SDL_VIDEO_DRIVER_WINDOWS) && !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
 
 #include "SDL_windowsvideo.h"
-#include "SDL_windowsmousepassthrough.h"
+#include "SDL_windowsinputregion.h"
 #include "../../events/SDL_mouse_c.h"
 
 /* A low-level mouse hook sees the mouse input that goes to every window. Windows holds each mouse event, for the whole system, until the hook

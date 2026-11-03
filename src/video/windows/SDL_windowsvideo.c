@@ -31,7 +31,7 @@
 #include "../../core/windows/SDL_hid.h"
 
 #include "SDL_windowsvideo.h"
-#include "SDL_windowsmousepassthrough.h"
+#include "SDL_windowsinputregion.h"
 #include "SDL_windowsframebuffer.h"
 #include "SDL_windowsmessagebox.h"
 #include "SDL_windowsrawinput.h"

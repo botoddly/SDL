@@ -20,11 +20,11 @@
 */
 #include "SDL_internal.h"
 
-#ifndef SDL_windowsmousepassthrough_h_
-#define SDL_windowsmousepassthrough_h_
+#ifndef SDL_windowsinputregion_h_
+#define SDL_windowsinputregion_h_
 
 extern bool WIN_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
 // Reports the mouse input that passed through windows since the last call.
 extern void WIN_PumpMousePassthroughEvents(SDL_VideoDevice *_this);
 
-#endif // SDL_windowsmousepassthrough_h_
+#endif // SDL_windowsinputregion_h_
