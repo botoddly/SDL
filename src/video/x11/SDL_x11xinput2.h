@@ -42,5 +42,7 @@ extern bool X11_Xinput2SelectMouseAndKeyboard(SDL_VideoDevice *_this, SDL_Window
 extern void X11_Xinput2UpdateDevices(SDL_VideoDevice *_this);
 extern void X11_Xinput2UpdatePointerMapping(SDL_VideoDevice *_this);
 extern bool X11_Xinput2HandlesMotionForWindow(SDL_WindowData *window_data);
+extern bool X11_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
+extern void X11_SendPendingPassthroughMotion(SDL_VideoDevice *_this);
 
 #endif // SDL_x11xinput2_h_

@@ -112,6 +112,7 @@ static bool SetInputTransparent(SDL_Window *window, bool transparent)
     if (transparent && SetLayeredWindowAttributes(data->hwnd, 0, (BYTE)(window->opacity * 255.0f), LWA_ALPHA) == 0) {
         return WIN_SetError("SetLayeredWindowAttributes()");
     }
+    data->input_transparent = transparent;
     return true;
 }
 

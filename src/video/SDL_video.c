@@ -4565,6 +4565,11 @@ void SDL_DestroyWindow(SDL_Window *window)
         SDL_DestroyWindow(window->first_child);
     }
 
+    // Stop mouse passthrough events while the driver's window data still exists.
+    if (window->mouse_passthrough_events) {
+        SDL_SetWindowMousePassthroughEvents(window, false);
+    }
+
     SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_DESTROYED, 0, 0);
 
     SDL_DestroyWindowSurface(window);
@@ -6245,6 +6250,27 @@ bool SDL_SetWindowShape(SDL_Window *window, SDL_Surface *shape)
         if (!_this->UpdateWindowShape(_this, window, surface)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool SDL_SetWindowMousePassthroughEvents(SDL_Window *window, bool enabled)
+{
+    CHECK_WINDOW_MAGIC(window, false);
+
+    if (!_this->SetWindowMousePassthroughEvents) {
+        return SDL_Unsupported();
+    }
+    if (window->mouse_passthrough_events == enabled) {
+        return true;
+    }
+    if (!_this->SetWindowMousePassthroughEvents(_this, window, enabled)) {
+        return false;
+    }
+
+    window->mouse_passthrough_events = enabled;
+    if (!enabled) {
+        SDL_ForgetMousePassthroughWindow(window);
     }
     return true;
 }

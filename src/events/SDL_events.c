@@ -1551,6 +1551,7 @@ static void SDL_PumpEventsInternal(bool push_sentinel)
     if (_this) {
         _this->PumpEvents(_this);
     }
+    SDL_UpdateMousePassthroughFocus();
 #endif
 
     SDL_PumpEventMaintenance();

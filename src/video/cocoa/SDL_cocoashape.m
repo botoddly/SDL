@@ -51,4 +51,18 @@ bool Cocoa_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Sur
     return true;
 }
 
+bool Cocoa_IsShapeTransparentAt(SDL_Window *window, float x, float y)
+{
+    SDL_Surface *shape = (SDL_Surface *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_SHAPE_POINTER, NULL);
+    Uint8 a;
+
+    if (!shape) {
+        return false;
+    }
+
+    const int shape_x = (int)SDL_roundf((x / (window->w - 1)) * (shape->w - 1));
+    const int shape_y = (int)SDL_roundf((y / (window->h - 1)) * (shape->h - 1));
+    return !SDL_ReadSurfacePixel(shape, shape_x, shape_y, NULL, NULL, NULL, &a) || a == SDL_ALPHA_TRANSPARENT;
+}
+
 #endif // SDL_VIDEO_DRIVER_COCOA

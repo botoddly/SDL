@@ -371,6 +371,7 @@ add_sdl_test_executable(testatomic NONINTERACTIVE DISABLE_THREADS_ARGS "--no-thr
 add_sdl_test_executable(testintersections SOURCES testintersections.c NAME83 intersec)
 add_sdl_test_executable(testrelative SOURCES testrelative.c NAME83 relative)
 add_sdl_test_executable(testhittesting SOURCES testhittesting.c NAME83 hittest)
+add_sdl_test_executable(testmousepassthrough SOURCES testmousepassthrough.c NAME83 passthru)
 add_sdl_test_executable(testdraw SOURCES testdraw.c NAME83 draw)
 add_sdl_test_executable(testdrawchessboard SOURCES testdrawchessboard.c NAME83 drawches)
 add_sdl_test_executable(testdropfile MAIN_CALLBACKS SOURCES testdropfile.c NAME83 dropfile)

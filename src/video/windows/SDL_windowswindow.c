@@ -1866,7 +1866,8 @@ bool WIN_SetWindowOpacity(SDL_VideoDevice *_this, SDL_Window *window, float opac
     HWND hwnd = data->hwnd;
     const LONG style = GetWindowLong(hwnd, GWL_EXSTYLE);
 
-    if (opacity == 1.0f) {
+    // A shape that lets all input through needs the layered style (SDL_windowsshape.c), so the window then stays layered at full opacity.
+    if (opacity == 1.0f && !data->input_transparent) {
         // want it fully opaque, just mark it unlayered if necessary.
         if (style & WS_EX_LAYERED) {
             if (SetWindowLong(hwnd, GWL_EXSTYLE, style & ~WS_EX_LAYERED) == 0) {

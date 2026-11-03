@@ -2614,6 +2614,47 @@ static int SDLCALL video_raiseWindow(void *arg)
     return TEST_COMPLETED;
 }
 
+/**
+ * Tests SDL_SetWindowMousePassthroughEvents: invalid windows, unsupported drivers, and enabling, disabling and destroying a window while enabled.
+ */
+static int SDLCALL video_setWindowMousePassthroughEvents(void *arg)
+{
+    const char *driver = SDL_GetCurrentVideoDriver();
+    /* X11 also needs XInput 2.1, which every X server since 2012 has. */
+    const bool supported = SDL_strcmp(driver, "x11") == 0 || SDL_strcmp(driver, "windows") == 0 || SDL_strcmp(driver, "cocoa") == 0;
+    bool result;
+    SDL_Window *window;
+
+    SDLTest_AssertPass("Call to SDL_SetWindowMousePassthroughEvents(NULL, true)");
+    result = SDL_SetWindowMousePassthroughEvents(NULL, true);
+    SDLTest_AssertCheck(!result, "Result for an invalid window is %d, expected 0", result);
+
+    window = createVideoSuiteTestWindow("video_setWindowMousePassthroughEvents");
+    if (!window) {
+        return TEST_ABORTED;
+    }
+
+    SDLTest_AssertPass("Call to SDL_SetWindowMousePassthroughEvents(window, true) on driver %s", driver);
+    result = SDL_SetWindowMousePassthroughEvents(window, true);
+    SDLTest_AssertCheck(result == supported, "Result is %d, expected %d (%s)", result, supported, result ? "" : SDL_GetError());
+
+    if (supported) {
+        result = SDL_SetWindowMousePassthroughEvents(window, true);
+        SDLTest_AssertCheck(result, "Enabling again returns %d, expected 1", result);
+
+        result = SDL_SetWindowMousePassthroughEvents(window, false);
+        SDLTest_AssertCheck(result, "Disabling returns %d, expected 1", result);
+
+        result = SDL_SetWindowMousePassthroughEvents(window, true);
+        SDLTest_AssertCheck(result, "Enabling after disabling returns %d, expected 1", result);
+    }
+
+    /* The window is destroyed while enabled. */
+    destroyVideoSuiteTestWindow(window);
+
+    return TEST_COMPLETED;
+}
+
 /* ================= Test References ================== */
 
 /* Video test cases */
@@ -2707,6 +2748,9 @@ static const SDLTest_TestCaseReference videoTestGetWindowSurface = {
 static const SDLTest_TestCaseReference videoTestRaiseWindow = {
     video_raiseWindow, "video_raiseWindow", "Checks window focus", TEST_ENABLED
 };
+static const SDLTest_TestCaseReference videoTestSetWindowMousePassthroughEvents = {
+    video_setWindowMousePassthroughEvents, "video_setWindowMousePassthroughEvents", "Checks enabling and disabling mouse passthrough events", TEST_ENABLED
+};
 
 /* Sequence of Video test cases */
 static const SDLTest_TestCaseReference *videoTests[] = {
@@ -2733,6 +2777,7 @@ static const SDLTest_TestCaseReference *videoTests[] = {
     &videoTestCreateMaximized,
     &videoTestGetWindowSurface,
     &videoTestRaiseWindow,
+    &videoTestSetWindowMousePassthroughEvents,
     NULL
 };
 

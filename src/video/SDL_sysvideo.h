@@ -108,6 +108,7 @@ struct SDL_Window
     bool constrain_popup;
     bool is_destroying;
     bool is_dropping; // drag/drop in progress, expecting SDL_SendDropComplete().
+    bool mouse_passthrough_events;
 
     int safe_inset_left;
     int safe_inset_right;
@@ -319,6 +320,7 @@ struct SDL_VideoDevice
     void (*DestroyWindowFramebuffer)(SDL_VideoDevice *_this, SDL_Window *window);
     void (*OnWindowEnter)(SDL_VideoDevice *_this, SDL_Window *window);
     bool (*UpdateWindowShape)(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape);
+    bool (*SetWindowMousePassthroughEvents)(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
     bool (*FlashWindow)(SDL_VideoDevice *_this, SDL_Window *window, SDL_FlashOperation operation);
     bool (*ApplyWindowProgress)(SDL_VideoDevice *_this, SDL_Window *window);
     bool (*SetWindowFocusable)(SDL_VideoDevice *_this, SDL_Window *window, bool focusable);

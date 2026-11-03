@@ -137,6 +137,12 @@ struct SDL_VideoData
     SDL_Point global_mouse_position;
     Uint32 global_mouse_buttons;
 
+    // Windows with mouse passthrough events, and whether raw motion arrived since the last pump.
+    int passthrough_window_count;
+    bool passthrough_motion_pending;
+    // The buttons the user holds, from raw events, which arrive even when another client receives the input.
+    SDL_MouseButtonFlags raw_buttons_held;
+
     unsigned long xinput_last_button_serial;
     unsigned long xinput_last_key_serial;
     int xinput_last_keyboard_device;

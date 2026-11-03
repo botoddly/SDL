@@ -24,6 +24,7 @@
 
 #include "SDL_cocoamouse.h"
 #include "SDL_cocoavideo.h"
+#include "SDL_cocoashape.h"
 
 #include "../../events/SDL_mouse_c.h"
 
@@ -962,6 +963,144 @@ void Cocoa_HandleMouseWarp(CGFloat x, CGFloat y)
     data->seenWarp = true;
 
     DLog("(%g, %g)", x, y);
+}
+
+/* Mouse passthrough events: a global monitor sees the mouse input sent to other applications, so never the input the application's own windows
+   receive, and nothing is reported twice. */
+static id cocoa_passthrough_monitor = nil;
+static int cocoa_passthrough_window_count = 0;
+// A Ctrl-click that emulates a right click, from its press to its release.
+static bool cocoa_passthrough_ctrl_left = false;
+
+static bool Cocoa_LocatePassthroughPointer(SDL_Window *window, void *userdata, float *x, float *y)
+{
+    const NSPoint *screen_point = (const NSPoint *)userdata;
+    SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
+    const NSRect rect = [data.nswindow convertRectFromScreen:NSMakeRect(screen_point->x, screen_point->y, 0.0, 0.0)];
+
+    // Window coordinates, as native mouse motion reports.
+    *x = (float)rect.origin.x;
+    *y = (float)(window->h - rect.origin.y);
+    return true;
+}
+
+/* SDL updates which parts of a shaped window let input through only from the window's own motion. Once the pointer is over a transparent part,
+   the window gets no more motion, so this updates it when the pointer reaches an opaque part. The window can also move under a still pointer,
+   so this runs for button events too. */
+static void Cocoa_UpdatePassthroughIgnoreMouseState(NSPoint screen_point)
+{
+    SDL_VideoDevice *_this = SDL_GetVideoDevice();
+    SDL_Window *window;
+
+    for (window = _this->windows; window; window = window->next) {
+        float x, y;
+        if (!(window->flags & SDL_WINDOW_TRANSPARENT) || !SDL_IsMousePassthroughWindowEligible(window)) {
+            continue;
+        }
+        Cocoa_LocatePassthroughPointer(window, &screen_point, &x, &y);
+        if (x >= 0.0f && y >= 0.0f && x < (float)window->w && y < (float)window->h) {
+            SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
+            data.nswindow.ignoresMouseEvents = Cocoa_IsShapeTransparentAt(window, x, y) ? YES : NO;
+        }
+    }
+}
+
+static void Cocoa_HandlePassthroughEvent(NSEvent *event)
+{
+    const NSEventType type = [event type];
+    const NSEventSubtype subtype = [event subtype];
+    const Uint64 timestamp = Cocoa_GetEventTimestamp([event timestamp]);
+    CGEventRef cgevent = [event CGEvent];
+    NSPoint screen_point;
+
+    if (cocoa_passthrough_window_count == 0) {
+        return;
+    }
+    // Tablets generate mouse events too.
+    if (subtype == NSEventSubtypeTabletPoint || subtype == NSEventSubtypeTabletProximity) {
+        return;
+    }
+    if (cgevent) {
+        // Global display coordinates at the time of the event, with the origin at the top left of the main display. Cocoa's screen
+        // coordinates have it at the bottom left, as Cocoa_GetGlobalMouseState() flips them.
+        SDL_CocoaVideoData *videodata = (__bridge SDL_CocoaVideoData *)SDL_GetVideoDevice()->internal;
+        const CGPoint location = CGEventGetLocation(cgevent);
+        screen_point = NSMakePoint(location.x, videodata.mainDisplayHeight - location.y);
+    } else {
+        // An event without a window has its location in screen coordinates.
+        screen_point = [event locationInWindow];
+        if ([event window]) {
+            screen_point = [[event window] convertRectToScreen:NSMakeRect(screen_point.x, screen_point.y, 0.0, 0.0)].origin;
+        }
+    }
+
+    Cocoa_UpdatePassthroughIgnoreMouseState(screen_point);
+
+    switch (type) {
+    case NSEventTypeMouseMoved:
+    case NSEventTypeLeftMouseDragged:
+    case NSEventTypeRightMouseDragged:
+    case NSEventTypeOtherMouseDragged:
+        SDL_SendPassthroughMouseMotion(timestamp, Cocoa_LocatePassthroughPointer, &screen_point);
+        break;
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeOtherMouseDown:
+    case NSEventTypeLeftMouseUp:
+    case NSEventTypeRightMouseUp:
+    case NSEventTypeOtherMouseUp:
+    {
+        const bool down = (type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown || type == NSEventTypeOtherMouseDown);
+        const Uint8 button = Cocoa_GetMouseButton(event, down, &cocoa_passthrough_ctrl_left);
+        SDL_SendPassthroughMouseButton(timestamp, Cocoa_LocatePassthroughPointer, &screen_point, button, down);
+    } break;
+    default:
+        break;
+    }
+}
+
+bool Cocoa_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled)
+{
+    @autoreleasepool {
+        SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
+
+        if (enabled) {
+            if (cocoa_passthrough_window_count == 0) {
+                const NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown | NSEventMaskRightMouseUp |
+                                         NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp | NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged |
+                                         NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged;
+                cocoa_passthrough_monitor = [NSEvent addGlobalMonitorForEventsMatchingMask:mask
+                                                                                   handler:^(NSEvent *event) {
+                    // SDL events are sent from the main thread.
+                    if ([NSThread isMainThread]) {
+                        Cocoa_HandlePassthroughEvent(event);
+                    } else {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            Cocoa_HandlePassthroughEvent(event);
+                        });
+                    }
+                }];
+                if (!cocoa_passthrough_monitor) {
+                    return SDL_SetError("Couldn't monitor the mouse input of other applications");
+                }
+                cocoa_passthrough_ctrl_left = false;
+            }
+            ++cocoa_passthrough_window_count;
+            return true;
+        }
+
+        --cocoa_passthrough_window_count;
+        if (cocoa_passthrough_window_count == 0 && cocoa_passthrough_monitor) {
+            [NSEvent removeMonitor:cocoa_passthrough_monitor];
+            cocoa_passthrough_monitor = nil;
+        }
+
+        // The window keeps a focus it received natively.
+        if (SDL_GetMouseFocus() == window && Cocoa_GetMouseFocus() != data.nswindow) {
+            SDL_SetMouseFocus(NULL);
+        }
+        return true;
+    }
 }
 
 void Cocoa_QuitMouse(SDL_VideoDevice *_this)

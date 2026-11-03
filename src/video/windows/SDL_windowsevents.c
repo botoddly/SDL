@@ -23,6 +23,7 @@
 #ifdef SDL_VIDEO_DRIVER_WINDOWS
 
 #include "SDL_windowsvideo.h"
+#include "SDL_windowsmousepassthrough.h"
 #include "../../events/SDL_events_c.h"
 #include "../../events/SDL_touch_c.h"
 #include "../../events/scancodes_windows.h"
@@ -428,15 +429,7 @@ static bool ShouldClearWindowOnEraseBackground(SDL_WindowData *data)
 #define MI_WP_SIGNATURE_MASK 0xFFFFFF00
 #define IsTouchEvent(dw)     ((dw)&MI_WP_SIGNATURE_MASK) == MI_WP_SIGNATURE
 
-typedef enum
-{
-    SDL_MOUSE_EVENT_SOURCE_UNKNOWN,
-    SDL_MOUSE_EVENT_SOURCE_MOUSE,
-    SDL_MOUSE_EVENT_SOURCE_TOUCH,
-    SDL_MOUSE_EVENT_SOURCE_PEN,
-} SDL_MOUSE_EVENT_SOURCE;
-
-static SDL_MOUSE_EVENT_SOURCE GetMouseMessageSource(ULONG extrainfo)
+SDL_MOUSE_EVENT_SOURCE WIN_GetMouseMessageSource(ULONG extrainfo)
 {
     // Mouse data (ignoring synthetic mouse events generated for touchscreens)
     /* Versions below Vista will set the low 7 bits to the Mouse ID and don't use bit 7:
@@ -595,7 +588,7 @@ static void WIN_HandleRawMouseInput(Uint64 timestamp, SDL_VideoData *data, HANDL
         return;
     }
 
-    if (GetMouseMessageSource(rawmouse->ulExtraInformation) != SDL_MOUSE_EVENT_SOURCE_MOUSE ||
+    if (WIN_GetMouseMessageSource(rawmouse->ulExtraInformation) != SDL_MOUSE_EVENT_SOURCE_MOUSE ||
         (SDL_TouchDevicesAvailable() && (rawmouse->ulExtraInformation & 0x80) == 0x80)) {
         return;
     }
@@ -1485,7 +1478,7 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (!data->videodata->raw_mouse_enabled) {
             // Only generate mouse events for real mouse
-            if (GetMouseMessageSource((ULONG)GetMessageExtraInfo()) == SDL_MOUSE_EVENT_SOURCE_MOUSE &&
+            if (WIN_GetMouseMessageSource((ULONG)GetMessageExtraInfo()) == SDL_MOUSE_EVENT_SOURCE_MOUSE &&
                 lParam != data->last_pointer_update) {
                 SDL_SendMouseMotion(WIN_GetEventTimestamp(), window, SDL_GLOBAL_MOUSE_ID, false, (float)GET_X_LPARAM(lParam), (float)GET_Y_LPARAM(lParam));
             }
@@ -1508,7 +1501,7 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     {
         /* SDL_Mouse *mouse = SDL_GetMouse(); */
         if (!data->videodata->raw_mouse_enabled) {
-            if (GetMouseMessageSource((ULONG)GetMessageExtraInfo()) == SDL_MOUSE_EVENT_SOURCE_MOUSE &&
+            if (WIN_GetMouseMessageSource((ULONG)GetMessageExtraInfo()) == SDL_MOUSE_EVENT_SOURCE_MOUSE &&
                 lParam != data->last_pointer_update) {
                 WIN_CheckWParamMouseButtons(WIN_GetEventTimestamp(), wParam, data, SDL_GLOBAL_MOUSE_ID);
             }
@@ -1573,8 +1566,16 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             if (!SDL_GetMouse()->relative_mode) {
-                // When WM_MOUSELEAVE is fired we can be assured that the cursor has left the window
-                SDL_SetMouseFocus(NULL);
+                DWORD pos = GetMessagePos();
+                POINT cursorPos;
+                cursorPos.x = GET_X_LPARAM(pos);
+                cursorPos.y = GET_Y_LPARAM(pos);
+                ScreenToClient(hwnd, &cursorPos);
+                // When WM_MOUSELEAVE is fired we can be assured that the cursor has left the window, unless it only left the window region:
+                // then mouse passthrough events take over, and they send the leave.
+                if (!SDL_MousePassthroughKeepsFocus(data->window, (float)cursorPos.x, (float)cursorPos.y)) {
+                    SDL_SetMouseFocus(NULL);
+                }
             }
         }
 
@@ -2687,6 +2688,11 @@ void WIN_PumpEvents(SDL_VideoDevice *_this)
     }
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+    /* The mouse input that passed through windows, after the native messages it may follow. A window with both opaque and transparent parts can
+       then get its native and passthrough input slightly out of order, for example a quick release and press across the border in one pump.
+       A window that lets all input through gets no native mouse input, so it is not affected. */
+    WIN_PumpMousePassthroughEvents(_this);
+
     /* Windows loses a shift KEYUP event when you have both pressed at once and let go of one.
        You won't get a KEYUP until both are released, and that keyup will only be for the second
        key you released. Take heroic measures and check the keystate as of the last handled event,

@@ -35,4 +35,17 @@ extern void WIN_PumpEventsForHWND(SDL_VideoDevice *_this, HWND hwnd);
 extern void WIN_SendWakeupEvent(SDL_VideoDevice *_this, SDL_Window *window);
 extern int WIN_WaitEventTimeout(SDL_VideoDevice *_this, Sint64 timeoutNS);
 
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+typedef enum
+{
+    SDL_MOUSE_EVENT_SOURCE_UNKNOWN,
+    SDL_MOUSE_EVENT_SOURCE_MOUSE,
+    SDL_MOUSE_EVENT_SOURCE_TOUCH,
+    SDL_MOUSE_EVENT_SOURCE_PEN,
+} SDL_MOUSE_EVENT_SOURCE;
+
+// Which device generated a mouse message, from its extra info.
+extern SDL_MOUSE_EVENT_SOURCE WIN_GetMouseMessageSource(ULONG extrainfo);
+#endif
+
 #endif // SDL_windowsevents_h_

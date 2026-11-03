@@ -943,6 +943,14 @@ static void SDL_PrivateSendMouseButton(Uint64 timestamp, SDL_Window *window, SDL
     }
     buttonstate = source->buttonstate;
 
+    /* A forwarded press is held in the global source. A release from that source ends it, even a native one, because GetMouseInputSource resolves
+       a release to the source holding the button. Touch and pen releases are synthesized, so they never end a real press. */
+    if (!down && source->mouseID == SDL_GLOBAL_MOUSE_ID && mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID &&
+        button >= SDL_BUTTON_LEFT && button <= SDL_BUTTON_X2) {
+        mouse->forwarded_buttons &= ~SDL_BUTTON_MASK(button);
+        mouse->forwarded_button_windows[button] = NULL;
+    }
+
     // SDL_HINT_MOUSE_TOUCH_EVENTS: controlling whether mouse events should generate synthetic touch events
     if (mouse->mouse_touch_events) {
         if (mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID && button == SDL_BUTTON_LEFT) {
@@ -1053,6 +1061,138 @@ void SDL_SendMouseButtonClicks(Uint64 timestamp, SDL_Window *window, SDL_MouseID
 void SDL_SendMouseButton(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, Uint8 button, bool down)
 {
     SDL_PrivateSendMouseButton(timestamp, window, mouseID, button, down, -1);
+}
+
+bool SDL_IsMousePassthroughWindowEligible(SDL_Window *window)
+{
+    return window->mouse_passthrough_events && !window->is_hiding && !window->is_destroying &&
+           !(window->flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED | SDL_WINDOW_MOUSE_CAPTURE));
+}
+
+static bool SDL_IsInsideWindowArea(SDL_Window *window, float x, float y)
+{
+    return x >= 0.0f && y >= 0.0f && x < (float)window->w && y < (float)window->h;
+}
+
+bool SDL_MousePassthroughKeepsFocus(SDL_Window *window, float x, float y)
+{
+    if (!SDL_IsMousePassthroughWindowEligible(window) || !SDL_IsInsideWindowArea(window, x, y)) {
+        return false;
+    }
+    // The window may have received the focus natively, and it gets the leave once passthrough motion is outside its area.
+    SDL_GetMouse()->passthrough_window = window;
+    return true;
+}
+
+static SDL_Window *SDL_FindMousePassthroughWindow(SDL_PassthroughPointerCallback locate, void *userdata, float *x, float *y)
+{
+    SDL_VideoDevice *video = SDL_GetVideoDevice();
+    if (!video) {
+        return NULL;
+    }
+
+    for (SDL_Window *window = video->windows; window; window = window->next) {
+        if (SDL_IsMousePassthroughWindowEligible(window) && locate(window, userdata, x, y) && SDL_IsInsideWindowArea(window, *x, *y)) {
+            return window;
+        }
+    }
+    return NULL;
+}
+
+// Moves the pointer to where the passthrough input happened: the window that left gets its leave, the window under the pointer gets the motion.
+static SDL_Window *SDL_MovePassthroughPointer(Uint64 timestamp, SDL_PassthroughPointerCallback locate, void *userdata)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+    float x = 0.0f, y = 0.0f;
+    SDL_Window *target = SDL_FindMousePassthroughWindow(locate, userdata, &x, &y);
+    SDL_Window *last = mouse->passthrough_window;
+
+    if (last && last != target) {
+        // A capture keeps the focus, because the captured release takes its window ID from the focus.
+        if (last->flags & SDL_WINDOW_MOUSE_CAPTURE) {
+            if (!target) {
+                return NULL;
+            }
+        } else if (mouse->focus == last) {
+            float last_x, last_y;
+            if (locate(last, userdata, &last_x, &last_y) && !SDL_IsInsideWindowArea(last, last_x, last_y)) {
+                // SDL clamps this motion to the window's edge and sends the leave.
+                SDL_SendMouseMotion(timestamp, last, SDL_GLOBAL_MOUSE_ID, false, last_x, last_y);
+            } else {
+                SDL_SetMouseFocus(NULL);
+            }
+        }
+    }
+    mouse->passthrough_window = target;
+
+    if (target) {
+        SDL_SendMouseMotion(timestamp, target, SDL_GLOBAL_MOUSE_ID, false, x, y);
+    }
+    return target;
+}
+
+void SDL_SendPassthroughMouseMotion(Uint64 timestamp, SDL_PassthroughPointerCallback locate, void *userdata)
+{
+    SDL_MovePassthroughPointer(timestamp, locate, userdata);
+}
+
+void SDL_SendPassthroughMouseButton(Uint64 timestamp, SDL_PassthroughPointerCallback locate, void *userdata, Uint8 button, bool down)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+
+    if (button < SDL_BUTTON_LEFT || button > SDL_BUTTON_X2) {
+        return;
+    }
+
+    const SDL_MouseButtonFlags mask = SDL_BUTTON_MASK(button);
+    if (!down && !(mouse->forwarded_buttons & mask)) {
+        return;
+    }
+
+    // The button event takes its position from the motion before it.
+    SDL_Window *target = SDL_MovePassthroughPointer(timestamp, locate, userdata);
+    if (down) {
+        // A press outside every window's area is not reported. A press of a button that is already held would be ignored, so it does not own the button.
+        if (!target || (SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, false) & mask)) {
+            return;
+        }
+        mouse->forwarded_buttons |= mask;
+        mouse->forwarded_button_windows[button] = target;
+    }
+    // A release outside every window's area has no window, so it clears the button without taking the focus back at the clamped position.
+    SDL_SendMouseButton(timestamp, target, SDL_GLOBAL_MOUSE_ID, button, down);
+}
+
+void SDL_ForgetMousePassthroughWindow(SDL_Window *window)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+
+    for (Uint8 button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; ++button) {
+        const SDL_MouseButtonFlags mask = SDL_BUTTON_MASK(button);
+        if ((mouse->forwarded_buttons & mask) && mouse->forwarded_button_windows[button] == window) {
+            SDL_SendMouseButton(0, NULL, SDL_GLOBAL_MOUSE_ID, button, false);
+            mouse->forwarded_buttons &= ~mask;
+            mouse->forwarded_button_windows[button] = NULL;
+        }
+    }
+    if (mouse->passthrough_window == window) {
+        mouse->passthrough_window = NULL;
+    }
+}
+
+void SDL_UpdateMousePassthroughFocus(void)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+    SDL_Window *window = mouse->passthrough_window;
+
+    // A captured window keeps its focus, see SDL_MovePassthroughPointer().
+    if (!window || SDL_IsMousePassthroughWindowEligible(window) || (window->flags & SDL_WINDOW_MOUSE_CAPTURE)) {
+        return;
+    }
+    if (mouse->focus == window) {
+        SDL_SetMouseFocus(NULL);
+    }
+    mouse->passthrough_window = NULL;
 }
 
 void SDL_SendMouseWheel(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, float x, float y, SDL_MouseWheelDirection direction)
@@ -1474,7 +1614,8 @@ bool SDL_UpdateMouseCapture(bool force_release)
 
     if (!force_release) {
         if (SDL_GetMessageBoxCount() == 0 &&
-            (mouse->capture_desired || (mouse->auto_capture && SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, false) != 0))) {
+            // A forwarded press never captures, as a capture would take the pointer from the window beneath.
+            (mouse->capture_desired || (mouse->auto_capture && (SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, false) & ~mouse->forwarded_buttons) != 0))) {
             if (!mouse->relative_mode) {
                 capture_window = mouse->focus;
             }

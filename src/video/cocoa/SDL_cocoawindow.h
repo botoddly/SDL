@@ -195,6 +195,8 @@ extern bool Cocoa_SetWindowFocusable(SDL_VideoDevice *_this, SDL_Window *window,
 extern bool Cocoa_SetWindowModal(SDL_VideoDevice *_this, SDL_Window *window, bool modal);
 extern bool Cocoa_SetWindowParent(SDL_VideoDevice *_this, SDL_Window *window, SDL_Window *parent);
 extern bool Cocoa_SyncWindow(SDL_VideoDevice *_this, SDL_Window *window);
+// The SDL button of a mouse button event. ctrl_left tracks a Ctrl-click that emulates a right click, from its press to its release.
+extern Uint8 Cocoa_GetMouseButton(NSEvent *event, bool down, bool *ctrl_left);
 
 extern void Cocoa_MenuVisibilityCallback(void *userdata, const char *name, const char *oldValue, const char *newValue);
 

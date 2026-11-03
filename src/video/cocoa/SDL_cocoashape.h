@@ -24,5 +24,7 @@
 #define SDL_cocoashape_h_
 
 extern bool Cocoa_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape);
+// Whether the window's shape lets mouse input through at (x, y) in window coordinates. A window without a shape never does.
+extern bool Cocoa_IsShapeTransparentAt(SDL_Window *window, float x, float y);
 
 #endif // SDL_cocoashape_h_

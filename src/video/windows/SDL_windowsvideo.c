@@ -31,6 +31,7 @@
 #include "../../core/windows/SDL_hid.h"
 
 #include "SDL_windowsvideo.h"
+#include "SDL_windowsmousepassthrough.h"
 #include "SDL_windowsframebuffer.h"
 #include "SDL_windowsmessagebox.h"
 #include "SDL_windowsrawinput.h"
@@ -278,6 +279,7 @@ static SDL_VideoDevice *WIN_CreateDevice(void)
         data->EnableNonClientDpiScaling = (BOOL (WINAPI *)(HWND))SDL_LoadFunction(data->userDLL, "EnableNonClientDpiScaling");
         data->AdjustWindowRectExForDpi = (BOOL (WINAPI *)(LPRECT, DWORD, BOOL, DWORD, UINT))SDL_LoadFunction(data->userDLL, "AdjustWindowRectExForDpi");
         data->GetDpiForWindow = (UINT (WINAPI *)(HWND))SDL_LoadFunction(data->userDLL, "GetDpiForWindow");
+        data->PhysicalToLogicalPointForPerMonitorDPI = (BOOL (WINAPI *)(HWND, LPPOINT))SDL_LoadFunction(data->userDLL, "PhysicalToLogicalPointForPerMonitorDPI");
         data->AreDpiAwarenessContextsEqual = (BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT))SDL_LoadFunction(data->userDLL, "AreDpiAwarenessContextsEqual");
         data->IsValidDpiAwarenessContext = (BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT))SDL_LoadFunction(data->userDLL, "IsValidDpiAwarenessContext");
         data->GetDisplayConfigBufferSizes = (LONG (WINAPI *)(UINT32,UINT32 *,UINT32 *))SDL_LoadFunction(data->userDLL, "GetDisplayConfigBufferSizes");
@@ -398,6 +400,7 @@ static SDL_VideoDevice *WIN_CreateDevice(void)
     device->ShowWindowSystemMenu = WIN_ShowWindowSystemMenu;
     device->SetWindowFocusable = WIN_SetWindowFocusable;
     device->UpdateWindowShape = WIN_UpdateWindowShape;
+    device->SetWindowMousePassthroughEvents = WIN_SetWindowMousePassthroughEvents;
 #endif
 
 #ifdef SDL_VIDEO_OPENGL_WGL
