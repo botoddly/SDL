@@ -3060,9 +3060,7 @@ extern SDL_DECLSPEC bool SDLCALL SDL_SetWindowShape(SDL_Window *window, SDL_Surf
  * keeps receiving the drag. Hidden and minimized windows, and a window that
  * captures the mouse, receive nothing this way.
  *
- * This is supported on Windows, macOS, and X11 with XInput 2.1 or later. It
- * is not supported on Wayland, and under Xwayland it receives no input
- * outside X11 windows.
+ * This is only supported on Windows.
  *
  * \param window the window.
  * \param enabled true to receive the mouse input that passes through the

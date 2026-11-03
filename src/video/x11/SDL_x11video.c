@@ -200,7 +200,6 @@ static SDL_VideoDevice *X11_CreateDevice(void)
     device->SetWindowHitTest = X11_SetWindowHitTest;
     device->AcceptDragAndDrop = X11_AcceptDragAndDrop;
     device->UpdateWindowShape = X11_UpdateWindowShape;
-    device->SetWindowMousePassthroughEvents = X11_SetWindowMousePassthroughEvents;
     device->FlashWindow = X11_FlashWindow;
 #ifdef SDL_USE_LIBDBUS
     device->ApplyWindowProgress = DBUS_ApplyWindowProgress;

@@ -1517,17 +1517,10 @@ static void X11_DispatchEvent(SDL_VideoDevice *_this, XEvent *xevent)
             SDL_Log("Mode: NotifyUngrab");
         }
 #endif
-        // Also on ungrab: from then on, the window receives the input under the pointer.
-        data->pointer_over_input_shape = true;
+        SDL_SetMouseFocus(data->window);
 
-        /* Mouse passthrough events keep the focus while the pointer crosses into the window's input shape. The motion below must then
-           move the pointer, so the last position is the one they reported. */
-        if (mouse->focus != data->window) {
-            SDL_SetMouseFocus(data->window);
-
-            mouse->last_x = xevent->xcrossing.x;
-            mouse->last_y = xevent->xcrossing.y;
-        }
+        mouse->last_x = xevent->xcrossing.x;
+        mouse->last_y = xevent->xcrossing.y;
 
 #ifdef SDL_VIDEO_DRIVER_X11_XFIXES
         {
@@ -1569,11 +1562,6 @@ static void X11_DispatchEvent(SDL_VideoDevice *_this, XEvent *xevent)
             SDL_SendMouseMotion(0, data->window, SDL_GLOBAL_MOUSE_ID, false, (float)xevent->xcrossing.x, (float)xevent->xcrossing.y);
         }
 
-        // Also on grab: until the ungrab, another client receives the input.
-        if (xevent->xcrossing.detail != NotifyInferior) {
-            data->pointer_over_input_shape = false;
-        }
-
         if (xevent->xcrossing.mode != NotifyGrab &&
             xevent->xcrossing.mode != NotifyUngrab &&
             xevent->xcrossing.detail != NotifyInferior) {
@@ -1584,10 +1572,7 @@ static void X11_DispatchEvent(SDL_VideoDevice *_this, XEvent *xevent)
                 X11_SetWindowKeyboardGrab(_this, data->window, false);
             }
 
-            // Leaving the input shape but not the window: mouse passthrough events take over, and they send the leave.
-            if (!SDL_MousePassthroughKeepsFocus(data->window, (float)xevent->xcrossing.x, (float)xevent->xcrossing.y)) {
-                SDL_SetMouseFocus(NULL);
-            }
+            SDL_SetMouseFocus(NULL);
         }
     } break;
 
@@ -2436,8 +2421,6 @@ void X11_PumpEvents(SDL_VideoDevice *_this)
     while (X11_PollEvent(data->display, &xevent)) {
         X11_DispatchEvent(_this, &xevent);
     }
-
-    X11_SendPendingPassthroughMotion(_this);
 
     // FIXME: Only need to do this when there are pending focus changes
     X11_HandleFocusChanges(_this);

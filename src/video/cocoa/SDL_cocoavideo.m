@@ -121,7 +121,6 @@ static SDL_VideoDevice *Cocoa_CreateDevice(void)
         device->SetWindowHitTest = Cocoa_SetWindowHitTest;
         device->AcceptDragAndDrop = Cocoa_AcceptDragAndDrop;
         device->UpdateWindowShape = Cocoa_UpdateWindowShape;
-        device->SetWindowMousePassthroughEvents = Cocoa_SetWindowMousePassthroughEvents;
         device->FlashWindow = Cocoa_FlashWindow;
         device->SetWindowFocusable = Cocoa_SetWindowFocusable;
         device->SetWindowParent = Cocoa_SetWindowParent;

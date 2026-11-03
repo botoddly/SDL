@@ -2620,8 +2620,7 @@ static int SDLCALL video_raiseWindow(void *arg)
 static int SDLCALL video_setWindowMousePassthroughEvents(void *arg)
 {
     const char *driver = SDL_GetCurrentVideoDriver();
-    /* X11 also needs XInput 2.1, which every X server since 2012 has. */
-    const bool supported = SDL_strcmp(driver, "x11") == 0 || SDL_strcmp(driver, "windows") == 0 || SDL_strcmp(driver, "cocoa") == 0;
+    const bool supported = SDL_strcmp(driver, "windows") == 0;
     bool result;
     SDL_Window *window;
 
