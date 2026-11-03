@@ -34,6 +34,7 @@
 #include "SDL_cocoamouse.h"
 #include "SDL_cocoaopengl.h"
 #include "SDL_cocoaopengles.h"
+#include "SDL_cocoashape.h"
 #include "SDL_cocoavideo.h"
 
 #if 0
@@ -1057,7 +1058,13 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
     SDL_Surface *shape = (SDL_Surface *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_SHAPE_POINTER, NULL);
     BOOL ignoresMouseEvents = NO;
 
-    if (shape) {
+    if (window->has_input_region) {
+        // The input region replaces the shape, and this keeps the window's own motion from undoing what Cocoa_SetWindowInputRegion() set.
+        NSPoint point = [theEvent locationInWindow];
+        if (!Cocoa_IsInInputRegion(window, (float)point.x, (float)(window->h - point.y))) {
+            ignoresMouseEvents = YES;
+        }
+    } else if (shape) {
         NSPoint point = [theEvent locationInWindow];
         NSRect windowRect = [[_data.nswindow contentView] frame];
         if (NSMouseInRect(point, windowRect, NO)) {

@@ -155,6 +155,8 @@ typedef enum
 @property(nonatomic) bool pending_position;
 @property(nonatomic) bool border_toggled;
 @property(nonatomic) bool has_modal_dialog;
+// The rectangles of the input region, as SDL_Rect, while the window has one.
+@property(nonatomic) NSData *input_region;
 
 #ifdef SDL_VIDEO_OPENGL_EGL
 @property(nonatomic) EGLSurface egl_surface;

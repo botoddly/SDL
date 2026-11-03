@@ -87,4 +87,27 @@ bool Wayland_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_S
     return true;
 }
 
+bool Wayland_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count)
+{
+    SDL_VideoData *video = _this->internal;
+    SDL_WindowData *data = window->internal;
+    struct wl_region *region;
+    int i;
+
+    if (!data->surface) {
+        return SDL_SetError("Window has no surface");
+    }
+
+    // An empty region lets all input through. The compositor applies the region with the surface's next commit, when the window presents a frame.
+    region = wl_compositor_create_region(video->compositor);
+    for (i = 0; i < count; ++i) {
+        if (rects[i].w > 0 && rects[i].h > 0) {
+            wl_region_add(region, rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+        }
+    }
+    wl_surface_set_input_region(data->surface, region);
+    wl_region_destroy(region);
+    return true;
+}
+
 #endif // SDL_VIDEO_DRIVER_WAYLAND

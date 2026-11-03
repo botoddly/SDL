@@ -24,32 +24,57 @@
 
 #include "SDL_windowsvideo.h"
 #include "SDL_windowsinputregion.h"
+#include "SDL_windowsshape.h"
 #include "../../events/SDL_mouse_c.h"
 
-/* A low-level mouse hook sees the mouse input that goes to every window. Windows holds each mouse event, for the whole system, until the hook
-   returns. So the hook runs on its own thread with its own message loop. It decides, as the input happens, whether an SDL window receives the
-   input itself, and queues the rest; it holds the lock only to queue. The event pump reports the queued input on the main thread. */
+/* Windows has no input region that leaves what a window shows alone. So a window with an input region lets all mouse input through, and a
+   low-level mouse hook keeps the left button presses in the region, and their releases, from the windows beneath. Windows holds each mouse
+   event, for the whole system, until the hook returns. So the hook runs on its own thread with its own message loop. It decides, as the input
+   happens, whether a press is in a window's region, and queues the presses it blocks and their releases; it holds the lock only to read the
+   regions and to queue. The event pump reports the queued input on the main thread. */
 
 typedef struct
 {
-    UINT message;
-    POINT pt;
-    WORD xbutton;
-} PassthroughInput;
+    SDL_WindowID window_id;
+    bool down;
+    // Window coordinates, as the window's own mouse events have them.
+    float x;
+    float y;
+} QueuedButton;
 
-// Plenty for the input between two pumps, as motion is merged. Beyond it, input is dropped rather than growing without bound.
-#define MAX_QUEUED_INPUT 4096
+typedef struct
+{
+    SDL_WindowID window_id;
+    HWND hwnd;
+    // The client area's origin in physical screen coordinates, as the hook reports them, and the size of a physical pixel in window coordinates.
+    POINT origin;
+    float scale_x;
+    float scale_y;
+    SDL_Rect *rects;
+    int num_rects;
+    int rects_capacity;
+    // The hook blocked a press in the region, so it blocks the release too, wherever it happens.
+    bool pressed;
+} RegionWindow;
+
+// Plenty for the presses between two pumps. Beyond it, input is dropped rather than growing without bound.
+#define MAX_QUEUED_BUTTONS 4096
+
+// The z-order can change during the walk up from a window, so the walk is bounded.
+#define MAX_WINDOWS_ABOVE 4096
 
 static struct
 {
-    // Guards queue, num_queued and queue_capacity, which the hook thread reads and writes.
+    // Guards windows, num_windows, queue, num_queued and queue_capacity, which the hook thread reads and writes. Only the main thread changes
+    // windows and num_windows, so it reads them without the lock.
     SDL_Mutex *lock;
-    PassthroughInput *queue;
+    RegionWindow *windows;
+    int num_windows;
+    QueuedButton *queue;
     int num_queued;
     int queue_capacity;
 
-    int num_windows;
-    // The last window is being disabled. Waiting for the thread handles sent messages, which can run SDL and application code.
+    // The last window is leaving the hook. Waiting for the thread handles sent messages, which can run SDL and application code.
     bool stopping;
     // The thread with the SDL windows, which reports the input. It is woken with a thread message, because a window can be recreated.
     DWORD main_thread_id;
@@ -61,23 +86,7 @@ static struct
     UINT wake_message;
     // The hook reports physical coordinates, so its thread is per-monitor DPI aware for hit testing, whatever the process is.
     DPI_AWARENESS_CONTEXT (WINAPI *SetThreadDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
-} passthrough;
-
-static HWND GetThreadCapture(DWORD thread_id)
-{
-    GUITHREADINFO info;
-
-    SDL_zero(info);
-    info.cbSize = sizeof(info);
-    return GetGUIThreadInfo(thread_id, &info) ? info.hwndCapture : NULL;
-}
-
-static bool IsOwnWindow(HWND hwnd)
-{
-    DWORD process_id = 0;
-    GetWindowThreadProcessId(hwnd, &process_id);
-    return process_id == GetCurrentProcessId();
-}
+} input_region;
 
 // The hook reports the requested position, which can lie past a screen edge or the cursor clip rectangle; the cursor itself stays inside both.
 static POINT ClampToCursorArea(POINT pt)
@@ -99,132 +108,214 @@ static POINT ClampToCursorArea(POINT pt)
     return pt;
 }
 
-// Whether an SDL window receives the input at pt itself, decided as the input happens. pt is in physical screen coordinates.
-static bool IsNativeInput(POINT pt)
+// Call it with the lock held.
+static RegionWindow *FindWindowByID(SDL_WindowID window_id)
 {
-    HWND foreground;
-    HWND hwnd;
-    LONG_PTR style;
+    int i;
 
-    // A capture routes the input to the capturing window wherever the pointer is. SDL captures for any of its windows, also ones that are not
-    // in the foreground; another application's capture is on the foreground thread.
-    if (GetThreadCapture(passthrough.main_thread_id)) {
-        return true;
+    for (i = 0; i < input_region.num_windows; ++i) {
+        if (input_region.windows[i].window_id == window_id) {
+            return &input_region.windows[i];
+        }
     }
-    foreground = GetForegroundWindow();
-    if (foreground && GetThreadCapture(GetWindowThreadProcessId(foreground, NULL))) {
-        return false;
-    }
-
-    hwnd = WindowFromPoint(pt);
-    if (!hwnd || !IsOwnWindow(hwnd)) {
-        return false;
-    }
-    // A window that lets all input through never receives it, whether or not hit testing skips it.
-    style = GetWindowLongPtr(GetAncestor(hwnd, GA_ROOT), GWL_EXSTYLE);
-    return (style & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) != (WS_EX_LAYERED | WS_EX_TRANSPARENT);
+    return NULL;
 }
 
 // Call it with the lock held.
-static void QueueInput(UINT message, POINT pt, WORD xbutton)
+static RegionWindow *FindWindowByHWND(HWND hwnd)
 {
-    PassthroughInput *input;
+    int i;
 
-    // Only the latest position of consecutive motion matters.
-    if (message == WM_MOUSEMOVE && passthrough.num_queued > 0 && passthrough.queue[passthrough.num_queued - 1].message == WM_MOUSEMOVE) {
-        passthrough.queue[passthrough.num_queued - 1].pt = pt;
-        return;
-    }
-
-    if (passthrough.num_queued == passthrough.queue_capacity) {
-        int capacity = passthrough.queue_capacity ? passthrough.queue_capacity * 2 : 64;
-        PassthroughInput *queue;
-        if (capacity > MAX_QUEUED_INPUT) {
-            return;
+    for (i = 0; i < input_region.num_windows; ++i) {
+        if (input_region.windows[i].hwnd == hwnd) {
+            return &input_region.windows[i];
         }
-        queue = (PassthroughInput *)SDL_realloc(passthrough.queue, capacity * sizeof(*queue));
-        if (!queue) {
-            return;
-        }
-        passthrough.queue = queue;
-        passthrough.queue_capacity = capacity;
     }
-
-    input = &passthrough.queue[passthrough.num_queued++];
-    input->message = message;
-    input->pt = pt;
-    input->xbutton = xbutton;
-
-    // Wake the event loop once per batch, so SDL_WaitEvent() returns. PostThreadMessage() does not wait.
-    if (passthrough.num_queued == 1) {
-        PostThreadMessage(passthrough.main_thread_id, passthrough.wake_message, 0, 0);
-    }
+    return NULL;
 }
 
-static LRESULT CALLBACK WIN_MousePassthroughHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+// Call it with the lock held. pt is in physical screen coordinates.
+static void GetWindowPoint(const RegionWindow *window, POINT pt, float *x, float *y)
 {
-    if (nCode == HC_ACTION) {
-        const MSLLHOOKSTRUCT *info = (const MSLLHOOKSTRUCT *)lParam;
-        const UINT message = (UINT)wParam;
-        bool release = false;
-        bool handled = true;
+    // Whole window coordinates, as the window's own mouse events have them.
+    *x = SDL_floorf((float)(pt.x - window->origin.x) * window->scale_x);
+    *y = SDL_floorf((float)(pt.y - window->origin.y) * window->scale_y);
+}
 
-        switch (message) {
-        case WM_MOUSEMOVE:
-        case WM_LBUTTONDOWN:
-        case WM_RBUTTONDOWN:
-        case WM_MBUTTONDOWN:
-        case WM_XBUTTONDOWN:
-            break;
-        case WM_LBUTTONUP:
-        case WM_RBUTTONUP:
-        case WM_MBUTTONUP:
-        case WM_XBUTTONUP:
-            release = true;
-            break;
-        default:
-            handled = false;
-            break;
+// Call it with the lock held. The window with pt, in physical screen coordinates, in its region, and pt in its window coordinates.
+static RegionWindow *FindWindowAt(POINT pt, float *x, float *y)
+{
+    int i, j;
+
+    for (i = 0; i < input_region.num_windows; ++i) {
+        RegionWindow *window = &input_region.windows[i];
+
+        // A hidden or minimized window takes no input. Neither call sends the window a message.
+        if (window->num_rects == 0 || !IsWindowVisible(window->hwnd) || IsIconic(window->hwnd)) {
+            continue;
         }
 
-        // Touch and pens generate mouse input too. A release is queued even when it is native: it is reported only if its press was, and the
-        // native one is then ignored.
-        if (handled && WIN_GetMouseMessageSource((ULONG)info->dwExtraInfo) == SDL_MOUSE_EVENT_SOURCE_MOUSE) {
+        GetWindowPoint(window, pt, x, y);
+        for (j = 0; j < window->num_rects; ++j) {
+            const SDL_Rect *rect = &window->rects[j];
+            if (*x >= (float)rect->x && *y >= (float)rect->y && *x < (float)rect->x + (float)rect->w && *y < (float)rect->y + (float)rect->h) {
+                return window;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Whether the window that would get input at pt, in physical screen coordinates, is above hwnd, such as another window that stays on top or a
+   taskbar flyout. Hit testing skips windows that let all input through, so a window that only shows something over the screen doesn't count. */
+static bool IsCoveredAt(HWND hwnd, POINT pt)
+{
+    HWND hit = WindowFromPoint(pt);
+    HWND above;
+    int i;
+
+    if (!hit) {
+        return false;
+    }
+    hit = GetAncestor(hit, GA_ROOT);
+
+    above = GetWindow(hwnd, GW_HWNDPREV);
+    for (i = 0; above && i < MAX_WINDOWS_ABOVE; ++i) {
+        if (above == hit) {
+            return true;
+        }
+        above = GetWindow(above, GW_HWNDPREV);
+    }
+    return false;
+}
+
+// Call it with the lock held.
+static bool QueueButton(const RegionWindow *window, bool down, float x, float y)
+{
+    QueuedButton *button;
+
+    if (input_region.num_queued == input_region.queue_capacity) {
+        int capacity = input_region.queue_capacity ? input_region.queue_capacity * 2 : 16;
+        QueuedButton *queue;
+        if (capacity > MAX_QUEUED_BUTTONS) {
+            return false;
+        }
+        queue = (QueuedButton *)SDL_realloc(input_region.queue, capacity * sizeof(*queue));
+        if (!queue) {
+            return false;
+        }
+        input_region.queue = queue;
+        input_region.queue_capacity = capacity;
+    }
+
+    button = &input_region.queue[input_region.num_queued++];
+    button->window_id = window->window_id;
+    button->down = down;
+    button->x = x;
+    button->y = y;
+
+    // Wake the event loop once per batch, so SDL_WaitEvent() returns. PostThreadMessage() does not wait.
+    if (input_region.num_queued == 1) {
+        PostThreadMessage(input_region.main_thread_id, input_region.wake_message, 0, 0);
+    }
+    return true;
+}
+
+// Whether the hook blocks a left button press at pt, in physical screen coordinates.
+static bool BlockPress(POINT pt)
+{
+    RegionWindow *window;
+    HWND hwnd = NULL;
+    bool blocked = false;
+    float x = 0.0f, y = 0.0f;
+
+    SDL_LockMutex(input_region.lock);
+    window = FindWindowAt(pt, &x, &y);
+    if (window) {
+        hwnd = window->hwnd;
+    }
+    SDL_UnlockMutex(input_region.lock);
+
+    // Hit testing runs outside the lock, so the main thread never waits for it.
+    if (!hwnd || IsCoveredAt(hwnd, pt)) {
+        return false;
+    }
+
+    // The window may have left the hook meanwhile.
+    SDL_LockMutex(input_region.lock);
+    window = FindWindowByHWND(hwnd);
+    if (window && QueueButton(window, true, x, y)) {
+        window->pressed = true;
+        blocked = true;
+    }
+    SDL_UnlockMutex(input_region.lock);
+    return blocked;
+}
+
+// Whether the hook blocks a left button release at pt, in physical screen coordinates: it does if it blocked the press.
+static bool BlockRelease(POINT pt)
+{
+    bool blocked = false;
+    int i;
+
+    SDL_LockMutex(input_region.lock);
+    for (i = 0; i < input_region.num_windows; ++i) {
+        RegionWindow *window = &input_region.windows[i];
+        if (window->pressed) {
+            float x, y;
+            GetWindowPoint(window, pt, &x, &y);
+            // The window beneath never got the press, so the release is blocked even if it can't be reported.
+            QueueButton(window, false, x, y);
+            window->pressed = false;
+            blocked = true;
+            break;
+        }
+    }
+    SDL_UnlockMutex(input_region.lock);
+    return blocked;
+}
+
+static LRESULT CALLBACK WIN_InputRegionHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONUP)) {
+        const MSLLHOOKSTRUCT *info = (const MSLLHOOKSTRUCT *)lParam;
+
+        // Touch and pens generate mouse input too, and the hook leaves it alone.
+        if (WIN_GetMouseMessageSource((ULONG)info->dwExtraInfo) == SDL_MOUSE_EVENT_SOURCE_MOUSE) {
             const POINT pt = ClampToCursorArea(info->pt);
-            if (release || !IsNativeInput(pt)) {
-                SDL_LockMutex(passthrough.lock);
-                QueueInput(message, pt, HIWORD(info->mouseData));
-                SDL_UnlockMutex(passthrough.lock);
+            const bool blocked = (wParam == WM_LBUTTONDOWN) ? BlockPress(pt) : BlockRelease(pt);
+            if (blocked) {
+                return 1;
             }
         }
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-static DWORD WINAPI WIN_MousePassthroughThread(LPVOID param)
+static DWORD WINAPI WIN_InputRegionThread(LPVOID param)
 {
     HMODULE module;
     MSG msg;
 
     // Windows silently removes a low-level hook that does not return in time.
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-    if (passthrough.SetThreadDpiAwarenessContext) {
-        passthrough.SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if (input_region.SetThreadDpiAwarenessContext) {
+        input_region.SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
     // SetWindowsHookEx() needs the module with the hook, and SDL can be linked statically or dynamically.
-    if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPTSTR)WIN_MousePassthroughHookProc, &module)) {
-        passthrough.hook = SetWindowsHookEx(WH_MOUSE_LL, WIN_MousePassthroughHookProc, module, 0);
+    if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPTSTR)WIN_InputRegionHookProc, &module)) {
+        input_region.hook = SetWindowsHookEx(WH_MOUSE_LL, WIN_InputRegionHookProc, module, 0);
     }
-    passthrough.hook_error = passthrough.hook ? 0 : GetLastError();
-    SetEvent(passthrough.ready_event);
-    if (!passthrough.hook) {
+    input_region.hook_error = input_region.hook ? 0 : GetLastError();
+    SetEvent(input_region.ready_event);
+    if (!input_region.hook) {
         return 0;
     }
 
     // Windows calls the hook while this thread retrieves messages.
     for (;;) {
-        const DWORD result = MsgWaitForMultipleObjects(1, &passthrough.stop_event, FALSE, INFINITE, QS_ALLINPUT);
+        const DWORD result = MsgWaitForMultipleObjects(1, &input_region.stop_event, FALSE, INFINITE, QS_ALLINPUT);
         if (result != WAIT_OBJECT_0 + 1) {
             break;
         }
@@ -232,57 +323,57 @@ static DWORD WINAPI WIN_MousePassthroughThread(LPVOID param)
         }
     }
 
-    UnhookWindowsHookEx(passthrough.hook);
-    passthrough.hook = NULL;
+    UnhookWindowsHookEx(input_region.hook);
+    input_region.hook = NULL;
     return 0;
 }
 
 static void StopThread(void)
 {
-    if (passthrough.thread) {
-        HANDLE thread = passthrough.thread;
-        SetEvent(passthrough.stop_event);
+    if (input_region.thread) {
+        HANDLE thread = input_region.thread;
+        SetEvent(input_region.stop_event);
         // Handle messages sent to this thread while waiting, so a hook call that sent one can finish.
         while (MsgWaitForMultipleObjects(1, &thread, FALSE, INFINITE, QS_SENDMESSAGE) == WAIT_OBJECT_0 + 1) {
             MSG msg;
             PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
         }
         CloseHandle(thread);
-        passthrough.thread = NULL;
+        input_region.thread = NULL;
     }
-    if (passthrough.ready_event) {
-        CloseHandle(passthrough.ready_event);
-        passthrough.ready_event = NULL;
+    if (input_region.ready_event) {
+        CloseHandle(input_region.ready_event);
+        input_region.ready_event = NULL;
     }
-    if (passthrough.stop_event) {
-        CloseHandle(passthrough.stop_event);
-        passthrough.stop_event = NULL;
+    if (input_region.stop_event) {
+        CloseHandle(input_region.stop_event);
+        input_region.stop_event = NULL;
     }
-    passthrough.hook = NULL;
+    input_region.hook = NULL;
 }
 
 static bool StartThread(SDL_VideoDevice *_this)
 {
-    passthrough.SetThreadDpiAwarenessContext = _this->internal->SetThreadDpiAwarenessContext;
-    passthrough.ready_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    passthrough.stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (!passthrough.ready_event || !passthrough.stop_event) {
+    input_region.SetThreadDpiAwarenessContext = _this->internal->SetThreadDpiAwarenessContext;
+    input_region.ready_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    input_region.stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!input_region.ready_event || !input_region.stop_event) {
         WIN_SetError("CreateEvent()");
         StopThread();
         return false;
     }
 
-    passthrough.thread = CreateThread(NULL, 0, WIN_MousePassthroughThread, NULL, 0, NULL);
-    if (!passthrough.thread) {
+    input_region.thread = CreateThread(NULL, 0, WIN_InputRegionThread, NULL, 0, NULL);
+    if (!input_region.thread) {
         WIN_SetError("CreateThread()");
         StopThread();
         return false;
     }
 
-    WaitForSingleObject(passthrough.ready_event, INFINITE);
-    if (!passthrough.hook) {
+    WaitForSingleObject(input_region.ready_event, INFINITE);
+    if (!input_region.hook) {
         // The thread exits on its own when the hook fails.
-        const DWORD error = passthrough.hook_error;
+        const DWORD error = input_region.hook_error;
         StopThread();
         SetLastError(error);
         return WIN_SetError("SetWindowsHookEx()");
@@ -290,142 +381,239 @@ static bool StartThread(SDL_VideoDevice *_this)
     return true;
 }
 
-// Frees everything once no window has mouse passthrough events and the thread is stopped.
+// Frees everything once no window is on the hook and the thread is stopped.
 static void Cleanup(void)
 {
-    SDL_free(passthrough.queue);
-    SDL_DestroyMutex(passthrough.lock);
-    SDL_zero(passthrough);
+    SDL_free(input_region.windows);
+    SDL_free(input_region.queue);
+    SDL_DestroyMutex(input_region.lock);
+    SDL_zero(input_region);
 }
 
-// Whether the pointer is over the window's own input, so it has the mouse focus natively.
-static bool IsPointerOverOwnInput(SDL_Window *window)
+static bool StartHook(SDL_VideoDevice *_this)
 {
-    const SDL_WindowData *data = window->internal;
-    POINT pt;
-    HWND hwnd;
-
-    if (data->input_transparent || !GetCursorPos(&pt)) {
+    input_region.lock = SDL_CreateMutex();
+    if (!input_region.lock) {
         return false;
     }
-    hwnd = WindowFromPoint(pt);
-    return hwnd && GetAncestor(hwnd, GA_ROOT) == data->hwnd;
-}
-
-bool WIN_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled)
-{
-    // Only the window being disabled can disable during the stop, as it was the last one.
-    if (passthrough.stopping) {
-        return enabled ? SDL_SetError("Mouse passthrough events are stopping") : true;
-    }
-
-    if (enabled) {
-        if (passthrough.num_windows == 0) {
-            passthrough.lock = SDL_CreateMutex();
-            if (!passthrough.lock) {
-                return false;
-            }
-            passthrough.wake_message = RegisterWindowMessage(TEXT("SDL_MousePassthroughWake"));
-            passthrough.main_thread_id = GetCurrentThreadId();
-            if (!StartThread(_this)) {
-                Cleanup();
-                return false;
-            }
-        }
-        ++passthrough.num_windows;
-        return true;
-    }
-
-    --passthrough.num_windows;
-    if (passthrough.num_windows == 0) {
-        // The hook takes the lock, so nothing here holds it while waiting for the thread.
-        passthrough.stopping = true;
-        StopThread();
+    input_region.wake_message = RegisterWindowMessage(TEXT("SDL_InputRegionWake"));
+    input_region.main_thread_id = GetCurrentThreadId();
+    if (!StartThread(_this)) {
         Cleanup();
-    }
-
-    // The window keeps a focus it received natively.
-    if (SDL_GetMouseFocus() == window && !IsPointerOverOwnInput(window)) {
-        SDL_SetMouseFocus(NULL);
+        return false;
     }
     return true;
 }
 
-static bool WIN_LocatePassthroughPointer(SDL_Window *window, void *userdata, float *x, float *y)
+static void StopHook(void)
+{
+    // The hook takes the lock, so nothing here holds it while waiting for the thread.
+    input_region.stopping = true;
+    StopThread();
+    Cleanup();
+}
+
+/* Where the window's client area is in the physical screen coordinates the hook reports, and how they map to window coordinates. The window's
+   own mouse events are in client coordinates, which are logical for a window that is not per-monitor DPI aware; for one that is, they are
+   physical. */
+static void GetPlacement(SDL_Window *window, POINT *origin, float *scale_x, float *scale_y)
 {
     const SDL_WindowData *data = window->internal;
-    POINT pt = *(const POINT *)userdata;
+    RECT client;
+    POINT corner, physical_origin, physical_corner;
 
-    // The hook reports physical coordinates. A window that is not per-monitor DPI aware uses logical ones; for one that is, this changes nothing.
-    if (data->videodata->PhysicalToLogicalPointForPerMonitorDPI && !data->videodata->PhysicalToLogicalPointForPerMonitorDPI(data->hwnd, &pt)) {
-        return false;
+    origin->x = 0;
+    origin->y = 0;
+    *scale_x = 1.0f;
+    *scale_y = 1.0f;
+    if (!GetClientRect(data->hwnd, &client) || !ClientToScreen(data->hwnd, origin)) {
+        return;
     }
-    // Client coordinates, as WM_MOUSEMOVE reports.
-    if (!ScreenToClient(data->hwnd, &pt)) {
-        return false;
+
+    // The conversion needs points inside the window, so the scale comes from the last pixel rather than the far edge.
+    corner.x = SDL_max(client.right - 1, 0);
+    corner.y = SDL_max(client.bottom - 1, 0);
+    if (!data->videodata->LogicalToPhysicalPointForPerMonitorDPI || !ClientToScreen(data->hwnd, &corner)) {
+        return;
     }
-    *x = (float)pt.x;
-    *y = (float)pt.y;
-    return true;
+    physical_origin = *origin;
+    physical_corner = corner;
+    if (!data->videodata->LogicalToPhysicalPointForPerMonitorDPI(data->hwnd, &physical_origin) ||
+        !data->videodata->LogicalToPhysicalPointForPerMonitorDPI(data->hwnd, &physical_corner)) {
+        return;
+    }
+    if (physical_corner.x > physical_origin.x) {
+        *scale_x = (float)(corner.x - origin->x) / (float)(physical_corner.x - physical_origin.x);
+    }
+    if (physical_corner.y > physical_origin.y) {
+        *scale_y = (float)(corner.y - origin->y) / (float)(physical_corner.y - physical_origin.y);
+    }
+    *origin = physical_origin;
 }
 
-static Uint8 GetButton(const PassthroughInput *input, bool *down)
+// Call it with the lock held.
+static RegionWindow *AddWindow(SDL_Window *window)
 {
-    switch (input->message) {
-    case WM_LBUTTONDOWN:
-        *down = true;
-        return SDL_BUTTON_LEFT;
-    case WM_LBUTTONUP:
-        *down = false;
-        return SDL_BUTTON_LEFT;
-    case WM_RBUTTONDOWN:
-        *down = true;
-        return SDL_BUTTON_RIGHT;
-    case WM_RBUTTONUP:
-        *down = false;
-        return SDL_BUTTON_RIGHT;
-    case WM_MBUTTONDOWN:
-        *down = true;
-        return SDL_BUTTON_MIDDLE;
-    case WM_MBUTTONUP:
-        *down = false;
-        return SDL_BUTTON_MIDDLE;
-    case WM_XBUTTONDOWN:
-    case WM_XBUTTONUP:
-        *down = (input->message == WM_XBUTTONDOWN);
-        return (input->xbutton == XBUTTON1) ? SDL_BUTTON_X1 : (input->xbutton == XBUTTON2) ? SDL_BUTTON_X2 : 0;
-    default:
-        return 0;
+    RegionWindow *windows = (RegionWindow *)SDL_realloc(input_region.windows, (input_region.num_windows + 1) * sizeof(*windows));
+    RegionWindow *added;
+
+    if (!windows) {
+        return NULL;
+    }
+    input_region.windows = windows;
+    added = &input_region.windows[input_region.num_windows++];
+    SDL_zerop(added);
+    added->window_id = window->id;
+    return added;
+}
+
+bool WIN_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count)
+{
+    SDL_WindowData *data = window->internal;
+    RegionWindow *entry;
+    RECT box;
+    POINT origin;
+    float scale_x, scale_y;
+    bool result = true;
+
+    /* The window lets all mouse input through, and the hook takes the presses in the region. If the hook can't be installed, the window still
+       lets all input through, so a failure never leaves it taking input it should let through. */
+    if (!data->input_transparent && !WIN_SetWindowInputTransparent(window, true)) {
+        return false;
+    }
+    // A region from SDL_SetWindowShape() clips what the window shows. Removing a region redraws the frame, so it is removed only if there is one.
+    if (GetWindowRgnBox(data->hwnd, &box) != ERROR && !SetWindowRgn(data->hwnd, NULL, TRUE)) {
+        return WIN_SetError("SetWindowRgn()");
+    }
+
+    // Only the window leaving the hook runs code during the stop, and it doesn't come back.
+    if (input_region.stopping) {
+        return SDL_SetError("The input region hook is stopping");
+    }
+    if (input_region.num_windows == 0 && !StartHook(_this)) {
+        return false;
+    }
+
+    GetPlacement(window, &origin, &scale_x, &scale_y);
+
+    SDL_LockMutex(input_region.lock);
+    entry = FindWindowByID(window->id);
+    if (!entry) {
+        entry = AddWindow(window);
+    }
+    if (entry && count > entry->rects_capacity) {
+        SDL_Rect *grown = (SDL_Rect *)SDL_realloc(entry->rects, count * sizeof(*grown));
+        if (grown) {
+            entry->rects = grown;
+            entry->rects_capacity = count;
+        } else {
+            entry = NULL;
+        }
+    }
+    if (entry) {
+        // A count of 0 only empties the region, so a press the hook blocked still has its release blocked and reported.
+        if (count > 0) {
+            SDL_memcpy(entry->rects, rects, count * sizeof(*rects));
+        }
+        entry->num_rects = count;
+        entry->hwnd = data->hwnd;
+        entry->origin = origin;
+        entry->scale_x = scale_x;
+        entry->scale_y = scale_y;
+    } else {
+        result = false;
+    }
+    SDL_UnlockMutex(input_region.lock);
+
+    // The hook started for a window that couldn't be added.
+    if (input_region.num_windows == 0) {
+        StopHook();
+    }
+    return result;
+}
+
+void WIN_UpdateWindowInputRegionPlacement(SDL_Window *window)
+{
+    RegionWindow *entry;
+    POINT origin;
+    float scale_x, scale_y;
+
+    if (input_region.num_windows == 0) {
+        return;
+    }
+
+    GetPlacement(window, &origin, &scale_x, &scale_y);
+
+    SDL_LockMutex(input_region.lock);
+    entry = FindWindowByID(window->id);
+    if (entry) {
+        entry->origin = origin;
+        entry->scale_x = scale_x;
+        entry->scale_y = scale_y;
+    }
+    SDL_UnlockMutex(input_region.lock);
+}
+
+void WIN_RemoveWindowInputRegion(SDL_Window *window)
+{
+    int i;
+
+    if (input_region.num_windows == 0) {
+        return;
+    }
+
+    SDL_LockMutex(input_region.lock);
+    for (i = 0; i < input_region.num_windows; ++i) {
+        if (input_region.windows[i].window_id == window->id) {
+            SDL_free(input_region.windows[i].rects);
+            --input_region.num_windows;
+            SDL_memmove(&input_region.windows[i], &input_region.windows[i + 1], (input_region.num_windows - i) * sizeof(*input_region.windows));
+            break;
+        }
+    }
+    SDL_UnlockMutex(input_region.lock);
+
+    if (input_region.num_windows == 0) {
+        StopHook();
     }
 }
 
-void WIN_PumpMousePassthroughEvents(SDL_VideoDevice *_this)
+void WIN_PumpInputRegionEvents(SDL_VideoDevice *_this)
 {
-    PassthroughInput *queue;
+    QueuedButton *queue;
     int num_queued;
     int i;
 
-    if (passthrough.num_windows == 0) {
+    if (input_region.num_windows == 0) {
         return;
     }
 
     // Report outside the lock, so the hook never waits for SDL.
-    SDL_LockMutex(passthrough.lock);
-    queue = passthrough.queue;
-    num_queued = passthrough.num_queued;
-    passthrough.queue = NULL;
-    passthrough.num_queued = 0;
-    passthrough.queue_capacity = 0;
-    SDL_UnlockMutex(passthrough.lock);
+    SDL_LockMutex(input_region.lock);
+    queue = input_region.queue;
+    num_queued = input_region.num_queued;
+    input_region.queue = NULL;
+    input_region.num_queued = 0;
+    input_region.queue_capacity = 0;
+    SDL_UnlockMutex(input_region.lock);
 
     for (i = 0; i < num_queued; ++i) {
-        PassthroughInput *input = &queue[i];
-        if (input->message == WM_MOUSEMOVE) {
-            SDL_SendPassthroughMouseMotion(0, WIN_LocatePassthroughPointer, &input->pt);
-        } else {
-            bool down = false;
-            const Uint8 button = GetButton(input, &down);
-            SDL_SendPassthroughMouseButton(0, WIN_LocatePassthroughPointer, &input->pt, button, down);
+        const QueuedButton *button = &queue[i];
+        SDL_Window *window;
+
+        for (window = _this->windows; window; window = window->next) {
+            if (window->id == button->window_id) {
+                break;
+            }
+        }
+        if (!window) {
+            continue;
+        }
+
+        SDL_SendInputRegionMouseButton(0, window, button->x, button->y, SDL_BUTTON_LEFT, button->down);
+        // The window lets all mouse input through, so it never gets a native leave. The input it took ends with the release.
+        if (!button->down && SDL_GetMouseFocus() == window) {
+            SDL_SetMouseFocus(NULL);
         }
     }
     SDL_free(queue);

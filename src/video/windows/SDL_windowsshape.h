@@ -24,5 +24,7 @@
 #define SDL_windowsshape_h_
 
 extern bool WIN_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape);
+// Lets all mouse input through a window, which stays visible, or stops letting it through.
+extern bool WIN_SetWindowInputTransparent(SDL_Window *window, bool transparent);
 
 #endif // SDL_windowsshape_h_

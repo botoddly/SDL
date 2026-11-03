@@ -737,6 +737,7 @@ static SDL_VideoDevice *CreateWaylandDevice(bool require_preferred_protocols)
     device->DestroyWindow = Wayland_DestroyWindow;
     device->SetWindowHitTest = Wayland_SetWindowHitTest;
     device->UpdateWindowShape = Wayland_UpdateWindowShape;
+    device->SetWindowInputRegion = Wayland_SetWindowInputRegion;
     device->FlashWindow = Wayland_FlashWindow;
 #ifdef SDL_USE_LIBDBUS
     device->ApplyWindowProgress = DBUS_ApplyWindowProgress;

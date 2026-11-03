@@ -23,8 +23,12 @@
 #ifndef SDL_windowsinputregion_h_
 #define SDL_windowsinputregion_h_
 
-extern bool WIN_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
-// Reports the mouse input that passed through windows since the last call.
-extern void WIN_PumpMousePassthroughEvents(SDL_VideoDevice *_this);
+extern bool WIN_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count);
+// Updates where the hook finds the window's region, when the window moves, resizes or changes its DPI.
+extern void WIN_UpdateWindowInputRegionPlacement(SDL_Window *window);
+// Takes the window off the hook, when it is destroyed.
+extern void WIN_RemoveWindowInputRegion(SDL_Window *window);
+// Reports the presses in input regions, and their releases, that the hook took since the last call.
+extern void WIN_PumpInputRegionEvents(SDL_VideoDevice *_this);
 
 #endif // SDL_windowsinputregion_h_

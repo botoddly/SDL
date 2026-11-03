@@ -360,6 +360,8 @@ SDL_X11_SYM(void,XScreenSaverSuspend,(Display *dpy,Bool suspend))
 SDL_X11_MODULE(XSHAPE)
 SDL_X11_SYM(void,XShapeCombineMask,(Display *dpy,Window dest,int dest_kind,int x_off,int y_off,Pixmap src,int op))
 SDL_X11_SYM(void,XShapeCombineRegion,(Display *a,Window b,int c,int d,int e,Region f,int g))
+SDL_X11_SYM(void,XShapeCombineRectangles,(Display *a,Window b,int c,int d,int e,XRectangle *f,int g,int h,int i))
+SDL_X11_SYM(Bool,XShapeQueryExtension,(Display *a,int *b,int *c))
 #endif
 
 #undef SDL_X11_MODULE

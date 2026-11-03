@@ -108,4 +108,50 @@ bool X11_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surfa
     return result;
 }
 
+bool X11_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count)
+{
+#ifdef SDL_VIDEO_DRIVER_X11_XSHAPE
+    SDL_WindowData *windowdata = window->internal;
+    Display *display = windowdata->videodata->display;
+    XRectangle *xrects = NULL;
+    bool isstack = false;
+    int num_xrects = 0;
+    int event_base, error_base;
+    int i;
+
+    if (!SDL_X11_HAVE_XSHAPE || !X11_XShapeQueryExtension(display, &event_base, &error_base)) {
+        return SDL_SetError("The X server doesn't support the SHAPE extension");
+    }
+
+    if (count > 0) {
+        xrects = SDL_small_alloc(XRectangle, count, &isstack);
+        if (!xrects) {
+            return false;
+        }
+    }
+    // X rectangles have 16-bit coordinates, and one with no area would wrap around to a huge one.
+    for (i = 0; i < count; ++i) {
+        const SDL_Rect *rect = &rects[i];
+        if (rect->w > 0 && rect->h > 0) {
+            XRectangle *xrect = &xrects[num_xrects++];
+            xrect->x = (short)SDL_clamp(rect->x, SDL_MIN_SINT16, SDL_MAX_SINT16);
+            xrect->y = (short)SDL_clamp(rect->y, SDL_MIN_SINT16, SDL_MAX_SINT16);
+            xrect->width = (unsigned short)SDL_min(rect->w, SDL_MAX_UINT16);
+            xrect->height = (unsigned short)SDL_min(rect->h, SDL_MAX_UINT16);
+        }
+    }
+
+    // The input shape leaves what the window shows alone. An empty one lets all input through.
+    X11_XShapeCombineRectangles(display, windowdata->xwindow, ShapeInput, 0, 0, xrects, num_xrects, ShapeSet, Unsorted);
+    X11_XFlush(display);
+
+    if (xrects) {
+        SDL_small_free(xrects, isstack);
+    }
+    return true;
+#else
+    return SDL_Unsupported();
+#endif // SDL_VIDEO_DRIVER_X11_XSHAPE
+}
+
 #endif // SDL_VIDEO_DRIVER_X11

@@ -2615,41 +2615,53 @@ static int SDLCALL video_raiseWindow(void *arg)
 }
 
 /**
- * Tests SDL_SetWindowMousePassthroughEvents: invalid windows, unsupported drivers, and enabling, disabling and destroying a window while enabled.
+ * Tests XDL_SetWindowInputRegion: invalid arguments, a window that isn't transparent, and setting and emptying the region of a transparent one.
  */
-static int SDLCALL video_setWindowMousePassthroughEvents(void *arg)
+static int SDLCALL video_setWindowInputRegion(void *arg)
 {
     const char *driver = SDL_GetCurrentVideoDriver();
-    const bool supported = SDL_strcmp(driver, "windows") == 0;
-    bool result;
+    const bool supported = SDL_strcmp(driver, "wayland") == 0 || SDL_strcmp(driver, "x11") == 0 || SDL_strcmp(driver, "windows") == 0 || SDL_strcmp(driver, "cocoa") == 0;
+    const SDL_Rect rect = { 10, 20, 30, 40 };
     SDL_Window *window;
+    bool result;
 
-    SDLTest_AssertPass("Call to SDL_SetWindowMousePassthroughEvents(NULL, true)");
-    result = SDL_SetWindowMousePassthroughEvents(NULL, true);
+    SDLTest_AssertPass("Call to XDL_SetWindowInputRegion(NULL, NULL, 0)");
+    result = XDL_SetWindowInputRegion(NULL, NULL, 0);
     SDLTest_AssertCheck(!result, "Result for an invalid window is %d, expected 0", result);
 
-    window = createVideoSuiteTestWindow("video_setWindowMousePassthroughEvents");
+    window = createVideoSuiteTestWindow("video_setWindowInputRegion");
     if (!window) {
         return TEST_ABORTED;
     }
+    result = XDL_SetWindowInputRegion(window, NULL, 0);
+    SDLTest_AssertCheck(!result, "Result for a window that isn't transparent is %d, expected 0", result);
+    destroyVideoSuiteTestWindow(window);
 
-    SDLTest_AssertPass("Call to SDL_SetWindowMousePassthroughEvents(window, true) on driver %s", driver);
-    result = SDL_SetWindowMousePassthroughEvents(window, true);
-    SDLTest_AssertCheck(result == supported, "Result is %d, expected %d (%s)", result, supported, result ? "" : SDL_GetError());
-
-    if (supported) {
-        result = SDL_SetWindowMousePassthroughEvents(window, true);
-        SDLTest_AssertCheck(result, "Enabling again returns %d, expected 1", result);
-
-        result = SDL_SetWindowMousePassthroughEvents(window, false);
-        SDLTest_AssertCheck(result, "Disabling returns %d, expected 1", result);
-
-        result = SDL_SetWindowMousePassthroughEvents(window, true);
-        SDLTest_AssertCheck(result, "Enabling after disabling returns %d, expected 1", result);
+    window = SDL_CreateWindow("video_setWindowInputRegion", 320, 240, SDL_WINDOW_TRANSPARENT | SDL_WINDOW_BORDERLESS);
+    SDLTest_AssertPass("Call to SDL_CreateWindow() with SDL_WINDOW_TRANSPARENT");
+    if (!window) {
+        SDLTest_Log("Couldn't create a transparent window: %s", SDL_GetError());
+        return TEST_SKIPPED;
     }
 
-    /* The window is destroyed while enabled. */
-    destroyVideoSuiteTestWindow(window);
+    result = XDL_SetWindowInputRegion(window, &rect, -1);
+    SDLTest_AssertCheck(!result, "Result for a negative count is %d, expected 0", result);
+    result = XDL_SetWindowInputRegion(window, NULL, 1);
+    SDLTest_AssertCheck(!result, "Result for a count without rectangles is %d, expected 0", result);
+
+    SDLTest_AssertPass("Call to XDL_SetWindowInputRegion(window, NULL, 0) on driver %s", driver);
+    result = XDL_SetWindowInputRegion(window, NULL, 0);
+    SDLTest_AssertCheck(result == supported, "Result for an empty region is %d, expected %d (%s)", result, supported, result ? "" : SDL_GetError());
+
+    if (supported) {
+        result = XDL_SetWindowInputRegion(window, &rect, 1);
+        SDLTest_AssertCheck(result, "Result for one rectangle is %d, expected 1 (%s)", result, result ? "" : SDL_GetError());
+        result = XDL_SetWindowInputRegion(window, NULL, 0);
+        SDLTest_AssertCheck(result, "Result for emptying the region is %d, expected 1 (%s)", result, result ? "" : SDL_GetError());
+    }
+
+    /* The window is destroyed while it has a region. */
+    SDL_DestroyWindow(window);
 
     return TEST_COMPLETED;
 }
@@ -2747,8 +2759,8 @@ static const SDLTest_TestCaseReference videoTestGetWindowSurface = {
 static const SDLTest_TestCaseReference videoTestRaiseWindow = {
     video_raiseWindow, "video_raiseWindow", "Checks window focus", TEST_ENABLED
 };
-static const SDLTest_TestCaseReference videoTestSetWindowMousePassthroughEvents = {
-    video_setWindowMousePassthroughEvents, "video_setWindowMousePassthroughEvents", "Checks enabling and disabling mouse passthrough events", TEST_ENABLED
+static const SDLTest_TestCaseReference videoTestSetWindowInputRegion = {
+    video_setWindowInputRegion, "video_setWindowInputRegion", "Checks setting and emptying the input region of a transparent window", TEST_ENABLED
 };
 
 /* Sequence of Video test cases */
@@ -2776,7 +2788,7 @@ static const SDLTest_TestCaseReference *videoTests[] = {
     &videoTestCreateMaximized,
     &videoTestGetWindowSurface,
     &videoTestRaiseWindow,
-    &videoTestSetWindowMousePassthroughEvents,
+    &videoTestSetWindowInputRegion,
     NULL
 };
 
