@@ -155,6 +155,8 @@ typedef enum
 @property(nonatomic) bool pending_position;
 @property(nonatomic) bool border_toggled;
 @property(nonatomic) bool has_modal_dialog;
+// The rectangles of the input region, as SDL_Rect, while the window has one.
+@property(nonatomic) NSData *input_region;
 
 #ifdef SDL_VIDEO_OPENGL_EGL
 @property(nonatomic) EGLSurface egl_surface;
@@ -195,8 +197,6 @@ extern bool Cocoa_SetWindowFocusable(SDL_VideoDevice *_this, SDL_Window *window,
 extern bool Cocoa_SetWindowModal(SDL_VideoDevice *_this, SDL_Window *window, bool modal);
 extern bool Cocoa_SetWindowParent(SDL_VideoDevice *_this, SDL_Window *window, SDL_Window *parent);
 extern bool Cocoa_SyncWindow(SDL_VideoDevice *_this, SDL_Window *window);
-// The SDL button of a mouse button event. ctrl_left tracks a Ctrl-click that emulates a right click, from its press to its release.
-extern Uint8 Cocoa_GetMouseButton(NSEvent *event, bool down, bool *ctrl_left);
 
 extern void Cocoa_MenuVisibilityCallback(void *userdata, const char *name, const char *oldValue, const char *newValue);
 

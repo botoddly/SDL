@@ -51,18 +51,38 @@ bool Cocoa_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Sur
     return true;
 }
 
-bool Cocoa_IsShapeTransparentAt(SDL_Window *window, float x, float y)
+bool Cocoa_IsInInputRegion(SDL_Window *window, float x, float y)
 {
-    SDL_Surface *shape = (SDL_Surface *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_SHAPE_POINTER, NULL);
-    Uint8 a;
+    SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
+    const SDL_Rect *rects = (const SDL_Rect *)data.input_region.bytes;
+    const NSUInteger count = data.input_region.length / sizeof(SDL_Rect);
 
-    if (!shape) {
-        return false;
+    for (NSUInteger i = 0; i < count; ++i) {
+        const SDL_Rect *rect = &rects[i];
+        if (x >= (float)rect->x && y >= (float)rect->y && x < (float)rect->x + (float)rect->w && y < (float)rect->y + (float)rect->h) {
+            return true;
+        }
     }
+    return false;
+}
 
-    const int shape_x = (int)SDL_roundf((x / (window->w - 1)) * (shape->w - 1));
-    const int shape_y = (int)SDL_roundf((y / (window->h - 1)) * (shape->h - 1));
-    return !SDL_ReadSurfacePixel(shape, shape_x, shape_y, NULL, NULL, NULL, &a) || a == SDL_ALPHA_TRANSPARENT;
+bool Cocoa_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count)
+{
+    @autoreleasepool {
+        SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
+        SDL_FPoint point;
+
+        data.input_region = [NSData dataWithBytes:rects length:(NSUInteger)count * sizeof(*rects)];
+
+        /* Cocoa has no input region, so the window takes all mouse input or none, depending on whether the cursor is in the region now. The
+           window updates this from its own mouse motion too, but it gets none while it ignores mouse events, so a region that moves under a
+           cursor standing still needs this call. */
+        SDL_GetGlobalMouseState(&point.x, &point.y);
+        point.x -= window->x;
+        point.y -= window->y;
+        data.nswindow.ignoresMouseEvents = Cocoa_IsInInputRegion(window, point.x, point.y) ? NO : YES;
+        return true;
+    }
 }
 
 #endif // SDL_VIDEO_DRIVER_COCOA

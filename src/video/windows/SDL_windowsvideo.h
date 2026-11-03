@@ -574,7 +574,7 @@ struct SDL_VideoData
     BOOL (WINAPI *EnableNonClientDpiScaling)( HWND );
     BOOL (WINAPI *AdjustWindowRectExForDpi)( LPRECT, DWORD, BOOL, DWORD, UINT );
     UINT (WINAPI *GetDpiForWindow)( HWND );
-    BOOL (WINAPI *PhysicalToLogicalPointForPerMonitorDPI)( HWND, LPPOINT );
+    BOOL (WINAPI *LogicalToPhysicalPointForPerMonitorDPI)( HWND, LPPOINT );
     BOOL (WINAPI *AreDpiAwarenessContextsEqual)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
     BOOL (WINAPI *IsValidDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
     HRESULT (WINAPI *GetDpiForMonitor)( HMONITOR         hmonitor,

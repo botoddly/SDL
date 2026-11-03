@@ -108,7 +108,8 @@ struct SDL_Window
     bool constrain_popup;
     bool is_destroying;
     bool is_dropping; // drag/drop in progress, expecting SDL_SendDropComplete().
-    bool mouse_passthrough_events;
+    // XDL_SetWindowInputRegion() set an input region. It stays set when the region is emptied, so the release of a press in it is still reported.
+    bool has_input_region;
 
     int safe_inset_left;
     int safe_inset_right;
@@ -320,7 +321,7 @@ struct SDL_VideoDevice
     void (*DestroyWindowFramebuffer)(SDL_VideoDevice *_this, SDL_Window *window);
     void (*OnWindowEnter)(SDL_VideoDevice *_this, SDL_Window *window);
     bool (*UpdateWindowShape)(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape);
-    bool (*SetWindowMousePassthroughEvents)(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
+    bool (*SetWindowInputRegion)(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count);
     bool (*FlashWindow)(SDL_VideoDevice *_this, SDL_Window *window, SDL_FlashOperation operation);
     bool (*ApplyWindowProgress)(SDL_VideoDevice *_this, SDL_Window *window);
     bool (*SetWindowFocusable)(SDL_VideoDevice *_this, SDL_Window *window, bool focusable);

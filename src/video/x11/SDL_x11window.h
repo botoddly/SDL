@@ -62,8 +62,6 @@ struct SDL_WindowData
     bool xinput2_mouse_enabled;
     bool xinput2_keyboard_enabled;
     bool mouse_grabbed;
-    // The pointer is over the window's input shape, so the window receives the input itself.
-    bool pointer_over_input_shape;
     Uint64 last_focus_event_time;
     unsigned long ignore_button_press_serial;
     PendingFocusEnum pending_focus;

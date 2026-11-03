@@ -24,5 +24,6 @@
 #define SDL_waylandshape_h_
 
 extern bool Wayland_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *shape);
+extern bool Wayland_SetWindowInputRegion(SDL_VideoDevice *_this, SDL_Window *window, const SDL_Rect *rects, int count);
 
 #endif // SDL_waylandshape_h_

@@ -4565,9 +4565,9 @@ void SDL_DestroyWindow(SDL_Window *window)
         SDL_DestroyWindow(window->first_child);
     }
 
-    // Stop mouse passthrough events while the driver's window data still exists.
-    if (window->mouse_passthrough_events) {
-        SDL_SetWindowMousePassthroughEvents(window, false);
+    // Release a button pressed in the input region before the window is gone, as its release will never be reported.
+    if (window->has_input_region) {
+        SDL_ForgetInputRegionWindow(window);
     }
 
     SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_DESTROYED, 0, 0);
@@ -6254,24 +6254,35 @@ bool SDL_SetWindowShape(SDL_Window *window, SDL_Surface *shape)
     return true;
 }
 
-bool SDL_SetWindowMousePassthroughEvents(SDL_Window *window, bool enabled)
+bool XDL_SetWindowInputRegion(SDL_Window *window, const SDL_Rect *rects, int count)
 {
+    SDL_PropertiesID props;
+
     CHECK_WINDOW_MAGIC(window, false);
 
-    if (!_this->SetWindowMousePassthroughEvents) {
+    if (!(window->flags & SDL_WINDOW_TRANSPARENT)) {
+        return SDL_SetError("Window must be created with SDL_WINDOW_TRANSPARENT");
+    }
+    if (count < 0) {
+        return SDL_InvalidParamError("count");
+    }
+    if (count > 0 && !rects) {
+        return SDL_InvalidParamError("rects");
+    }
+    if (!_this->SetWindowInputRegion) {
         return SDL_Unsupported();
     }
-    if (window->mouse_passthrough_events == enabled) {
-        return true;
-    }
-    if (!_this->SetWindowMousePassthroughEvents(_this, window, enabled)) {
+
+    // The region replaces any shape, and SDL applies the shape again when the window is resized.
+    props = SDL_GetWindowProperties(window);
+    if (!props || !SDL_ClearProperty(props, SDL_PROP_WINDOW_SHAPE_POINTER)) {
         return false;
     }
 
-    window->mouse_passthrough_events = enabled;
-    if (!enabled) {
-        SDL_ForgetMousePassthroughWindow(window);
+    if (!_this->SetWindowInputRegion(_this, window, rects, count)) {
+        return false;
     }
+    window->has_input_region = true;
     return true;
 }
 

@@ -23,7 +23,7 @@
 #ifdef SDL_VIDEO_DRIVER_WINDOWS
 
 #include "SDL_windowsvideo.h"
-#include "SDL_windowsmousepassthrough.h"
+#include "SDL_windowsinputregion.h"
 #include "../../events/SDL_events_c.h"
 #include "../../events/SDL_touch_c.h"
 #include "../../events/scancodes_windows.h"
@@ -1566,16 +1566,8 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             if (!SDL_GetMouse()->relative_mode) {
-                DWORD pos = GetMessagePos();
-                POINT cursorPos;
-                cursorPos.x = GET_X_LPARAM(pos);
-                cursorPos.y = GET_Y_LPARAM(pos);
-                ScreenToClient(hwnd, &cursorPos);
-                // When WM_MOUSELEAVE is fired we can be assured that the cursor has left the window, unless it only left the window region:
-                // then mouse passthrough events take over, and they send the leave.
-                if (!SDL_MousePassthroughKeepsFocus(data->window, (float)cursorPos.x, (float)cursorPos.y)) {
-                    SDL_SetMouseFocus(NULL);
-                }
+                // When WM_MOUSELEAVE is fired we can be assured that the cursor has left the window
+                SDL_SetMouseFocus(NULL);
             }
         }
 
@@ -1860,6 +1852,9 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (windowpos->flags & SWP_HIDEWINDOW) {
             SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_HIDDEN, 0, 0);
         }
+
+        // The input region hook tests presses against where the window is now.
+        WIN_UpdateWindowInputRegionPlacement(data->window);
 
         // When the window is minimized it's resized to the dock icon size, ignore this
         if (iconic) {
@@ -2453,6 +2448,9 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             RECT *const suggestedRect = (RECT *)lParam;
             int w, h;
 
+            // The input region hook maps physical coordinates to the window's, which can depend on its DPI.
+            WIN_UpdateWindowInputRegionPlacement(data->window);
+
 #ifdef HIGHDPI_DEBUG
             SDL_Log("WM_DPICHANGED: to %d\tsuggested rect: (%d, %d), (%dx%d)", newDPI,
                     suggestedRect->left, suggestedRect->top, suggestedRect->right - suggestedRect->left, suggestedRect->bottom - suggestedRect->top);
@@ -2688,10 +2686,8 @@ void WIN_PumpEvents(SDL_VideoDevice *_this)
     }
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
-    /* The mouse input that passed through windows, after the native messages it may follow. A window with both opaque and transparent parts can
-       then get its native and passthrough input slightly out of order, for example a quick release and press across the border in one pump.
-       A window that lets all input through gets no native mouse input, so it is not affected. */
-    WIN_PumpMousePassthroughEvents(_this);
+    // The presses in input regions and their releases, which the windows with them never get as native messages.
+    WIN_PumpInputRegionEvents(_this);
 
     /* Windows loses a shift KEYUP event when you have both pressed at once and let go of one.
        You won't get a KEYUP until both are released, and that keyup will only be for the second

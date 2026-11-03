@@ -75,7 +75,7 @@ struct SDL_WindowData
     HICON hicon;
     WNDPROC wndproc;
     HHOOK keyboard_hook;
-    // A fully transparent shape lets all mouse input through, so the window never receives it.
+    // A fully transparent shape or an input region lets all mouse input through, so the window never receives it natively.
     bool input_transparent;
     WPARAM mouse_button_flags;
     LPARAM last_pointer_update;

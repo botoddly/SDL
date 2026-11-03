@@ -553,28 +553,6 @@ static bool GetHintCtrlClickEmulateRightClick(void)
     return SDL_GetHintBoolean(SDL_HINT_MAC_CTRL_CLICK_EMULATE_RIGHT_CLICK, false);
 }
 
-Uint8 Cocoa_GetMouseButton(NSEvent *event, bool down, bool *ctrl_left)
-{
-    switch ([event buttonNumber]) {
-    case 0:
-        if (down) {
-            *ctrl_left = (([event modifierFlags] & NSEventModifierFlagControl) && GetHintCtrlClickEmulateRightClick());
-            return *ctrl_left ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
-        }
-        if (*ctrl_left) {
-            *ctrl_left = false;
-            return SDL_BUTTON_RIGHT;
-        }
-        return SDL_BUTTON_LEFT;
-    case 1:
-        return SDL_BUTTON_RIGHT;
-    case 2:
-        return SDL_BUTTON_MIDDLE;
-    default:
-        return (Uint8)SDL_min([event buttonNumber] + 1, 255);
-    }
-}
-
 static NSUInteger GetWindowWindowedStyle(SDL_Window *window)
 {
     /* IF YOU CHANGE ANY FLAGS IN HERE, PLEASE READ
@@ -1077,12 +1055,27 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
 - (void)updateIgnoreMouseState:(NSEvent *)theEvent
 {
     SDL_Window *window = _data.window;
-    NSPoint point = [theEvent locationInWindow];
-    NSRect windowRect = [[_data.nswindow contentView] frame];
+    SDL_Surface *shape = (SDL_Surface *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_SHAPE_POINTER, NULL);
     BOOL ignoresMouseEvents = NO;
 
-    if (NSMouseInRect(point, windowRect, NO) && Cocoa_IsShapeTransparentAt(window, point.x, window->h - point.y)) {
-        ignoresMouseEvents = YES;
+    if (window->has_input_region) {
+        // The input region replaces the shape, and this keeps the window's own motion from undoing what Cocoa_SetWindowInputRegion() set.
+        NSPoint point = [theEvent locationInWindow];
+        if (!Cocoa_IsInInputRegion(window, (float)point.x, (float)(window->h - point.y))) {
+            ignoresMouseEvents = YES;
+        }
+    } else if (shape) {
+        NSPoint point = [theEvent locationInWindow];
+        NSRect windowRect = [[_data.nswindow contentView] frame];
+        if (NSMouseInRect(point, windowRect, NO)) {
+            int x = (int)SDL_roundf((point.x / (window->w - 1)) * (shape->w - 1));
+            int y = (int)SDL_roundf(((window->h - point.y) / (window->h - 1)) * (shape->h - 1));
+            Uint8 a;
+
+            if (!SDL_ReadSurfacePixel(shape, x, y, NULL, NULL, NULL, &a) || a == SDL_ALPHA_TRANSPARENT) {
+                ignoresMouseEvents = YES;
+            }
+        }
     }
     _data.nswindow.ignoresMouseEvents = ignoresMouseEvents;
 }
@@ -1790,7 +1783,6 @@ static void Cocoa_SendMouseButtonClicks(SDL_Mouse *mouse, NSEvent *theEvent, SDL
 
     SDL_Mouse *mouse = SDL_GetMouse();
     int button;
-    bool ctrl_left = wasCtrlLeft;
 
     if (!mouse) {
         return;
@@ -1804,8 +1796,27 @@ static void Cocoa_SendMouseButtonClicks(SDL_Mouse *mouse, NSEvent *theEvent, SDL
         }
     }
 
-    button = Cocoa_GetMouseButton(theEvent, true, &ctrl_left);
-    wasCtrlLeft = ctrl_left ? YES : NO;
+    switch ([theEvent buttonNumber]) {
+    case 0:
+        if (([theEvent modifierFlags] & NSEventModifierFlagControl) &&
+            GetHintCtrlClickEmulateRightClick()) {
+            wasCtrlLeft = YES;
+            button = SDL_BUTTON_RIGHT;
+        } else {
+            wasCtrlLeft = NO;
+            button = SDL_BUTTON_LEFT;
+        }
+        break;
+    case 1:
+        button = SDL_BUTTON_RIGHT;
+        break;
+    case 2:
+        button = SDL_BUTTON_MIDDLE;
+        break;
+    default:
+        button = (int)[theEvent buttonNumber] + 1;
+        break;
+    }
 
     if (button == SDL_BUTTON_LEFT && [self processHitTest:theEvent]) {
         SDL_SendWindowEvent(_data.window, SDL_EVENT_WINDOW_HIT_TEST, 0, 0);
@@ -1833,14 +1844,30 @@ static void Cocoa_SendMouseButtonClicks(SDL_Mouse *mouse, NSEvent *theEvent, SDL
 
     SDL_Mouse *mouse = SDL_GetMouse();
     int button;
-    bool ctrl_left = wasCtrlLeft;
 
     if (!mouse) {
         return;
     }
 
-    button = Cocoa_GetMouseButton(theEvent, false, &ctrl_left);
-    wasCtrlLeft = ctrl_left ? YES : NO;
+    switch ([theEvent buttonNumber]) {
+    case 0:
+        if (wasCtrlLeft) {
+            button = SDL_BUTTON_RIGHT;
+            wasCtrlLeft = NO;
+        } else {
+            button = SDL_BUTTON_LEFT;
+        }
+        break;
+    case 1:
+        button = SDL_BUTTON_RIGHT;
+        break;
+    case 2:
+        button = SDL_BUTTON_MIDDLE;
+        break;
+    default:
+        button = (int)[theEvent buttonNumber] + 1;
+        break;
+    }
 
     if (button == SDL_BUTTON_LEFT && [self processHitTest:theEvent]) {
         SDL_SendWindowEvent(_data.window, SDL_EVENT_WINDOW_HIT_TEST, 0, 0);
@@ -1878,13 +1905,9 @@ static void Cocoa_SendMouseButtonClicks(SDL_Mouse *mouse, NSEvent *theEvent, SDL
     }
 
     if (!Cocoa_GetMouseFocus()) {
-        // The mouse is no longer over any window in the application, unless mouse passthrough events take over inside the window's area.
-        // Then this motion is still the window's.
-        NSPoint location = [theEvent locationInWindow];
-        if (!SDL_MousePassthroughKeepsFocus(_data.window, (float)location.x, (float)(_data.window->h - location.y))) {
-            SDL_SetMouseFocus(NULL);
-            return;
-        }
+        // The mouse is no longer over any window in the application
+        SDL_SetMouseFocus(NULL);
+        return;
     }
 
     window = _data.window;

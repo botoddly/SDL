@@ -159,11 +159,10 @@ typedef struct
     bool capture_desired;
     SDL_Window *capture_window;
 
-    // Buttons pressed through mouse passthrough events and still held, and the window that received each press, indexed by button.
+    // Buttons pressed in a window's input region, reported by SDL_SendInputRegionMouseButton() and still held, and the window that received each
+    // press, indexed by button.
     SDL_MouseButtonFlags forwarded_buttons;
     SDL_Window *forwarded_button_windows[SDL_BUTTON_X2 + 1];
-    // The window that received the last mouse passthrough event.
-    SDL_Window *passthrough_window;
 
     // Data for input source state
     int num_sources;
@@ -246,26 +245,12 @@ extern void SDL_ResetMouse(void);
 // Check if mouse position is within window or captured by window
 extern bool SDL_MousePositionInWindow(SDL_Window *window, float x, float y);
 
-// Gives the pointer position in a window's coordinates, for mouse passthrough events; false if it is unknown for that window.
-typedef bool (*SDL_PassthroughPointerCallback)(SDL_Window *window, void *userdata, float *x, float *y);
+// Report a button that a backend took from the windows beneath, in a window's input region, at (x, y) in window coordinates. Backends call it only
+// for input that the window does not receive natively. A press never captures the mouse, and a release is reported only if its press was, and once.
+extern void SDL_SendInputRegionMouseButton(Uint64 timestamp, SDL_Window *window, float x, float y, Uint8 button, bool down);
 
-// Whether a window currently receives mouse passthrough events: enabled, and not hidden, minimized, destroyed or capturing the mouse.
-extern bool SDL_IsMousePassthroughWindowEligible(SDL_Window *window);
-
-// Whether a native mouse leave at (x, y) in window coordinates should keep the mouse focus, because mouse passthrough events take over inside the window's area.
-// If so, the window gets the leave once passthrough motion is outside its area.
-extern bool SDL_MousePassthroughKeepsFocus(SDL_Window *window, float x, float y);
-
-// Report pointer motion or a button that passed through to another window. Backends call these only for input that no SDL window received itself, except
-// for releases, which they always report: a release is reported only if its press was, and it is never reported twice.
-extern void SDL_SendPassthroughMouseMotion(Uint64 timestamp, SDL_PassthroughPointerCallback locate, void *userdata);
-extern void SDL_SendPassthroughMouseButton(Uint64 timestamp, SDL_PassthroughPointerCallback locate, void *userdata, Uint8 button, bool down);
-
-// Releases the buttons a window received through mouse passthrough events and forgets the window, when it stops receiving them.
-extern void SDL_ForgetMousePassthroughWindow(SDL_Window *window);
-
-// Drops the mouse focus of the last window that received mouse passthrough events, once it can no longer receive them.
-extern void SDL_UpdateMousePassthroughFocus(void);
+// Releases the buttons a window received in its input region, when it is destroyed.
+extern void SDL_ForgetInputRegionWindow(SDL_Window *window);
 
 // Shutdown the mouse subsystem
 extern void SDL_QuitMouse(void);

@@ -786,7 +786,7 @@
     <ClInclude Include="..\..\src\video\windows\SDL_windowsmouse.h">
       <Filter>video\windows</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\video\windows\SDL_windowsmousepassthrough.h">
+    <ClInclude Include="..\..\src\video\windows\SDL_windowsinputregion.h">
       <Filter>video\windows</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\video\windows\SDL_windowsopengl.h">
@@ -1786,7 +1786,7 @@
     <ClCompile Include="..\..\src\video\windows\SDL_windowsmouse.c">
       <Filter>video\windows</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\src\video\windows\SDL_windowsmousepassthrough.c">
+    <ClCompile Include="..\..\src\video\windows\SDL_windowsinputregion.c">
       <Filter>video\windows</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\video\windows\SDL_windowsopengl.c">

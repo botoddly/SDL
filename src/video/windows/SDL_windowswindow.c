@@ -35,6 +35,7 @@
 #include "SDL_windowsvideo.h"
 #include "SDL_windowskeyboard.h"
 #include "SDL_windowswindow.h"
+#include "SDL_windowsinputregion.h"
 
 // Dropfile support
 #include <shellapi.h>
@@ -1684,6 +1685,10 @@ bool WIN_SetWindowKeyboardGrab(SDL_VideoDevice *_this, SDL_Window *window, bool 
 
 void WIN_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
 {
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
+    // Before the window is gone, as stopping the hook handles messages sent to it. A recreated window joins the hook again with its next region.
+    WIN_RemoveWindowInputRegion(window);
+#endif
     CleanupWindowData(_this, window);
 }
 

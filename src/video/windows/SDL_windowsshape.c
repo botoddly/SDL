@@ -86,7 +86,7 @@ static bool HasOpaquePixel(SDL_Surface *shape)
 
 /* A region clips what a window draws as well as its input, so an empty one would hide a transparent window.
    A transparent window whose shape has no opaque pixel stays visible and lets all input through instead. */
-static bool SetInputTransparent(SDL_Window *window, bool transparent)
+bool WIN_SetWindowInputTransparent(SDL_Window *window, bool transparent)
 {
     SDL_WindowData *data = window->internal;
     LONG_PTR style = GetWindowLongPtr(data->hwnd, GWL_EXSTYLE);
@@ -123,7 +123,7 @@ bool WIN_UpdateWindowShape(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surfa
 
     if (window->flags & SDL_WINDOW_TRANSPARENT) {
         bool passthrough = shape && !HasOpaquePixel(shape);
-        if (!SetInputTransparent(window, passthrough)) {
+        if (!WIN_SetWindowInputTransparent(window, passthrough)) {
             return false;
         }
         if (passthrough) {

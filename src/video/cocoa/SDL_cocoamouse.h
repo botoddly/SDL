@@ -31,7 +31,6 @@ extern void Cocoa_HandleMouseEvent(SDL_VideoDevice *_this, NSEvent *event);
 extern void Cocoa_HandleMouseWheel(SDL_Window *window, NSEvent *event);
 extern void Cocoa_HandleMouseWarp(CGFloat x, CGFloat y);
 extern void Cocoa_QuitMouse(SDL_VideoDevice *_this);
-extern bool Cocoa_SetWindowMousePassthroughEvents(SDL_VideoDevice *_this, SDL_Window *window, bool enabled);
 
 extern void Cocoa_InitGCMouse(void);
 extern bool Cocoa_GCMouseRelativeMode(void);
